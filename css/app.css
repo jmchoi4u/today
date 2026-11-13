@@ -595,3 +595,8 @@ summary{font-family:var(--font-display);font-size:14.5px;cursor:pointer;min-heig
 .add-pick .ap-n{display:grid;font-size:14.5px;line-height:1.25;min-width:0}
 .add-pick small{font-size:11.5px;color:var(--ink-soft)}
 .sec-h{font-family:var(--font-display);font-weight:400;font-size:19px;margin:26px 4px 10px}
+.dp-row{display:grid;grid-template-columns:88px minmax(0,1fr);gap:10px;padding:8px 8px;border-bottom:1.5px dashed var(--well-line);font-size:14.5px;line-height:1.4}
+.dp-row:last-of-type{border-bottom:0}
+.dp-row.on{background:var(--gold-soft);border-radius:10px;border-bottom-color:transparent}
+.dp-t{font-family:var(--font-display);font-size:13px;color:var(--ink-soft);padding-top:1px}
+.dp-b small{display:block;font-size:12px;color:var(--ink-soft);margin-top:2px}

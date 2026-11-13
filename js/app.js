@@ -7,7 +7,7 @@ import * as PK from './pk.js';
 import * as GM from './game.js';
 import * as WX from './weather.js';
 
-const VERSION = '1.5';
+const VERSION = '1.5.1';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -430,12 +430,19 @@ function coachList(day) {
     extra.push({ pri: 20, key: 'report5', icon: '📮', title: '금요일 5줄 보내는 날', sub: `${to ? `${to}에게 ` : ''}이번 주 한 것·숫자·막힌 것·다음 주·부탁. 기록은 미리 채워 둘게요`, action: { label: '쓰기', act: 'report5' } });
   }
   // 매일 모으는 한 줄 (예: 사장님 불편): 정한 시각이 지났는데 오늘 아직 없으면
+  const nowR = Math.round((now() - C.dayStartTs(day.date, rollover())) / MIN); // 하루 시작(새벽)부터 지난 분: 자정을 넘겨도 같은 날
   for (const dly of store.game()?.daily || []) {
     const it = itemById(dly.item);
-    if (!it || C.itemState(day, it).count || sn('daily:' + it.id)) continue;
-    if (dly.after && C.fmtTime(now()) < dly.after) continue;
-    if (dly.days && (dly.days === 'weekend') !== [0, 6].includes(C.keyToDate(day.date).getDay())) continue; // 평일만·주말만
+    if (!it || C.itemState(day, it).count || sn('daily:' + it.id) || !inDay(dly, day.date)) continue;
+    if (dly.after && nowR < relMin(dly.after)) continue;
     extra.push({ pri: 31, key: 'daily:' + it.id, icon: it.icon, tone: 'calm', title: dly.text || `${it.name} 남겨요`, sub: dly.sub || '', action: { label: '쓰기', act: 'tile', arg: it.id } });
+  }
+  // 시간대 규칙 (예: 밤 9시 뒤엔 결정·결제·큰 메시지 금지)
+  for (const h of store.game()?.hints || []) {
+    const k = 'hint:' + h.id;
+    if (!h.text || sn(k) || !inDay(h, day.date)) continue;
+    if ((h.after && nowR < relMin(h.after)) || (h.before && nowR >= relMin(h.before))) continue;
+    extra.push({ pri: h.pri || 34, key: k, icon: h.icon || '🧭', tone: 'calm', title: h.text, sub: h.sub || '' });
   }
   // 아침 햇빛: 일어나고 3시간 안, 해가 떠 있고, 비·눈이 아닐 때 (아침 빛은 밤에 졸음이 오는 시각을 앞당긴다)
   const W = wx(), sun = W.on && W.data ? WX.sunOf(W.data, tk) : null, t = now(), wk = C.wakeOf(day);
@@ -596,7 +603,32 @@ function todayHtml() {
 
 // ---------- 흐름 탭 ----------
 
-// 흐름·약 탭: 맨 위에서 무엇이든 시각을 정해 추가하고, 아래로 하루 흐름 → 기록 → 약
+// game.json 규칙의 날짜 조건: days(weekday/weekend), from, to
+// (from/to는 날짜 모양일 때만 날짜로 본다: 시간표 칸의 to "18:00"은 끝 시각이라서)
+const isDateKey = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+const inDay = (x, key) => (!x.days || (x.days === 'weekend') === [0, 6].includes(C.keyToDate(key).getDay())) && (!isDateKey(x.from) || key >= x.from) && (!isDateKey(x.to) || key <= x.to);
+// "HH:MM"을 하루 시작(새벽 rollover)부터 지난 분으로: 23:30 < 01:00이 되게
+const relMin = hhmm => {
+  const [h, m] = String(hhmm).split(':').map(Number);
+  return (((h * 60 + (m || 0) - rollover() * 60) % 1440) + 1440) % 1440;
+};
+
+// 약 창에 맞춘 하루 (game.json의 dayPlan): 지금 칸을 밝힌다
+function dayPlanHtml(key) {
+  const P = store.game()?.dayPlan;
+  const list = (P?.rows || []).filter(r => r.at && r.text && inDay(r, key));
+  if (!list.length) return '';
+  const nowR = key === todayKey() ? Math.round((now() - C.dayStartTs(key, rollover())) / MIN) : -1;
+  const rows = list.map((r, i) => {
+    const a = relMin(r.at), b = r.to ? relMin(r.to) : list[i + 1] ? relMin(list[i + 1].at) : 1440;
+    const on = nowR >= a && nowR < b;
+    return `<div class="dp-row ${on ? 'on' : ''}"><span class="dp-t">${esc(r.at)}${r.to ? `~${esc(r.to)}` : ''}</span><span class="dp-b">${on ? '<b>지금</b> · ' : ''}${esc(r.text)}${r.why ? `<small>${esc(r.why)}</small>` : ''}</span></div>`;
+  }).join('');
+  const note = P.note && (!P.noteTo || key <= P.noteTo) ? `<p class="hint">${esc(P.note)}</p>` : '';
+  return win(esc(P.title || '약 창에 맞춘 하루'), 'DAY', rows + note);
+}
+
+// 흐름·약 탭: 맨 위에서 무엇이든 시각을 정해 추가하고, 아래로 하루 흐름 → 기록 → 하루 시간표 → 약
 function flowHtml() {
   const key = viewKey(), day = store.day(key), today = isToday(), evs = C.live(day);
   const w = C.wakeOf(day), sl = C.sleepOf(day);
@@ -613,6 +645,7 @@ function flowHtml() {
   if (sl) rows.push([sl, row(sl, '🌙', '취침', '', 'time-sleep')]);
   rows.sort((a, b) => a[0] - b[0]);
   h += win('기록', 'LOG', rows.length ? `<div class="log">${rows.map(r => r[1]).join('')}</div><p class="hint">눌러서 시각·내용을 고치거나 지워요. 빠진 건 맨 위 "＋ 기록 추가"로.</p>` : '<p class="empty">기록이 없어요.</p>', '', `<span class="win-count">${evs.length}</span>`);
+  h += dayPlanHtml(key);
   h += medSectionsHtml(key);
   return h;
 }
@@ -746,6 +779,7 @@ function questHtml(g) {
     <h3 class="sub-h">전체 길 <small>${Q.doneStages}/${Q.stages.length} 단계</small></h3><ol class="q-stages">${stages}</ol>
     ${painHtml}
     <details><summary>금요일 5줄 · ${reports.length}번 보냄</summary>${reports.length ? `<ul class="med-ul">${reports.slice(-4).reverse().map(r => `<li>${md(r.key)} · ${esc(r.did || '')}</li>`).join('')}</ul>` : ''}<div class="row-btns"><button class="btn sm pri" data-act="report5">이번 주 보고 쓰기</button></div></details>
+    ${Q.rules?.length ? `<details><summary>판을 굴리는 장치</summary><ol class="med-ul">${Q.rules.map(x => `<li>${esc(x)}</li>`).join('')}</ol></details>` : ''}
     ${Q.traps?.length ? `<details><summary>미끄러지는 곳</summary><ul class="med-ul">${Q.traps.map(x => `<li>${esc(x)}</li>`).join('')}</ul></details>` : ''}
     ${Q.signals?.length ? `<details><summary>분기마다 볼 신호</summary><ul class="med-ul">${Q.signals.map(x => `<li>${esc(x)}</li>`).join('')}</ul></details>` : ''}
     <p class="hint">과제 하나 +${GM.QUEST_BONUS} EXP. 체크는 오늘 기록에 남아서 다른 기기와도 맞춰져요.</p>`);
