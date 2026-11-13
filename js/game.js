@@ -197,6 +197,11 @@ export const DEFAULT_ROUTINE = [
   { id: 'phone', text: '폰은 손 닿지 않는 곳에', check: 'manual' },
   { id: 'focus', text: '첫 집중 25분', check: 'focus' },
 ];
+// 평일(출근)과 주말에 다른 단계: days가 'weekday'면 월~금, 'weekend'면 토·일에만
+export function routineFor(steps, dateKey) {
+  const wd = C.keyToDate(dateKey).getDay(), weekend = wd === 0 || wd === 6;
+  return (steps || DEFAULT_ROUTINE).filter(s => !s.days || (s.days === 'weekend') === weekend);
+}
 export function routineState(steps, day, { focusOn = false } = {}) {
   const evs = day ? C.live(day) : [];
   const has = id => evs.some(e => e.item === id);

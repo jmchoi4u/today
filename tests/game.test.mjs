@@ -124,6 +124,10 @@ test('아침 루틴: 기록에서 단계를 확인한다', () => {
   st = GM.routineState(GM.DEFAULT_ROUTINE, store.day(key));
   assert.deepEqual(st.filter(s => s.done).map(s => s.id), ['wake', 'water', 'light', 'top3']);
   assert.equal(GM.routineState(GM.DEFAULT_ROUTINE, store.day(key), { focusOn: true }).find(s => s.id === 'focus').done, true);
+  const steps = [{ id: 'a' }, { id: 'w', days: 'weekday' }, { id: 'e', days: 'weekend' }];
+  assert.deepEqual(GM.routineFor(steps, '2026-11-13').map(s => s.id), ['a', 'w'], '금요일은 평일');
+  assert.deepEqual(GM.routineFor(steps, '2026-11-14').map(s => s.id), ['a', 'e'], '토요일은 주말');
+  assert.equal(GM.routineFor(null, '2026-11-14').length, GM.DEFAULT_ROUTINE.length);
 });
 
 test('코치: 외부 마감 30분 전과 지난 뒤, 최고 구간엔 50분, 시작이 안 되면 2분', () => {

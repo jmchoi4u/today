@@ -7,7 +7,7 @@ import * as PK from './pk.js';
 import * as GM from './game.js';
 import * as WX from './weather.js';
 
-const VERSION = '1.4';
+const VERSION = '1.4.1';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -434,6 +434,7 @@ function coachList(day) {
     const it = itemById(dly.item);
     if (!it || C.itemState(day, it).count || sn('daily:' + it.id)) continue;
     if (dly.after && C.fmtTime(now()) < dly.after) continue;
+    if (dly.days && (dly.days === 'weekend') !== [0, 6].includes(C.keyToDate(day.date).getDay())) continue; // 평일만·주말만
     extra.push({ pri: 31, key: 'daily:' + it.id, icon: it.icon, tone: 'calm', title: dly.text || `${it.name} 남겨요`, sub: dly.sub || '', action: { label: '쓰기', act: 'tile', arg: it.id } });
   }
   // 아침 햇빛: 일어나고 3시간 안, 해가 떠 있고, 비·눈이 아닐 때 (아침 빛은 밤에 졸음이 오는 시각을 앞당긴다)
@@ -627,7 +628,7 @@ function routineHtml(day) {
   const w = C.wakeOf(day), t = now();
   if (!w || t - w > 4 * HOUR || local().seen['rt:' + day.date]) return '';
   const def = store.game();
-  const steps = GM.routineState(def?.routine || GM.DEFAULT_ROUTINE, day, { focusOn: !!local().focus });
+  const steps = GM.routineState(GM.routineFor(def?.routine, day.date), day, { focusOn: !!local().focus });
   const n = steps.filter(s => s.done).length;
   if (n === steps.length) return '';
   const next = steps.find(s => !s.done);
@@ -2232,19 +2233,21 @@ paint();
 wxEnsure();
 setInterval(() => !document.hidden && wxEnsure(), 10 * MIN);
 
-// 홈 화면 아이콘을 길게 눌러 나오는 바로가기: ?do=항목 (바로 기록), ?focus=분 (집중 시작)
+// 홈 화면 바로가기와 캘린더 알림 링크: ?do=항목 (바로 기록), ?focus=분 (집중 시작), ?go=report (금요일 5줄)
 {
   const qs = new URLSearchParams(location.search);
-  const doId = qs.get('do'), focusMin = qs.get('focus');
-  if (doId || focusMin) {
+  const doId = qs.get('do'), focusMin = qs.get('focus'), go = qs.get('go');
+  if (doId || focusMin || go) {
     history.replaceState(null, '', location.pathname); // 새로고침해도 두 번 기록되지 않게
     const it = doId && itemById(doId);
     if (it) {
       const s = C.itemState(store.day(todayKey()), it);
       if (it.type === 'check' && s.done) openTileSheet(it.id);
+      else if (it.type === 'log' && it.ask === 'note' && it.noteFirst) actions.tile(it.id); // 바로 쓰는 칸
       else addAt(it, todayKey());
     } else if (doId) toast('그 항목을 찾지 못했어요');
     if (focusMin && /^\d{1,3}$/.test(focusMin) && !local().focus) actions.focus(focusMin);
+    if (go === 'report') actions.report5();
   }
 }
 if (local().focus) tickFocus();
