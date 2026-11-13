@@ -7,7 +7,7 @@ import * as PK from './pk.js';
 import * as GM from './game.js';
 import * as WX from './weather.js';
 
-const VERSION = '1.5.1';
+const VERSION = '1.6';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -49,7 +49,10 @@ const nameOf = id => {
     const t = store.game()?.quest?.stages?.flatMap(s => s.tasks || []).find(x => x.id === id.slice(2));
     return { name: t ? `퀘스트 · ${t.text}` : '퀘스트', icon: '🗺️' };
   }
-  if (id?.startsWith('rt:')) return { name: '아침 루틴', icon: '🌅' };
+  if (id?.startsWith('rt:')) {
+    const s = (store.game()?.routine || GM.DEFAULT_ROUTINE).find(x => x.id === id.slice(3));
+    return { name: s ? s.label || s.text : '아침 루틴', icon: s?.icon || '🌅' };
+  }
   return { name: '삭제된 항목', icon: '▫️' };
 };
 const season = () => C.seasonInfo(todayKey(), cfg().prefs?.seasonStart);
@@ -441,6 +444,7 @@ function coachList(day) {
   for (const h of store.game()?.hints || []) {
     const k = 'hint:' + h.id;
     if (!h.text || sn(k) || !inDay(h, day.date)) continue;
+    if (h.ifItem && !(itemById(h.ifItem) && C.itemState(day, itemById(h.ifItem)).count)) continue; // 그 항목 기록이 오늘 있을 때만
     if ((h.after && nowR < relMin(h.after)) || (h.before && nowR >= relMin(h.before))) continue;
     extra.push({ pri: h.pri || 34, key: k, icon: h.icon || '🧭', tone: 'calm', title: h.text, sub: h.sub || '' });
   }
@@ -483,7 +487,7 @@ function top3Html(day) {
     return left > 0 ? `⏰ ${C.fmtTime(t.due)}까지 · ${C.fmtDur(left / MIN)} 남음` : `⏰ ${C.fmtTime(t.due)} 마감 지남`;
   };
   const rows = set.map(t => {
-    const d = dueTxt(t), late = t.due && !t.done && t.due < now();
+    const d = [dueTxt(t), t.done && t.out ? `→ ${t.out}` : ''].filter(Boolean).join(' · '), late = t.due && !t.done && t.due < now();
     const report = t.done && t.to ? `<button class="icon-btn" data-act="t3-report" data-arg="${t.id}" aria-label="${esc(t.to)}에게 보고">📨</button>` : '';
     return `<div class="t3 ${t.done ? 'done' : ''} ${late ? 'late' : ''}"><button class="t3-main" data-act="t3-toggle" data-arg="${t.id}" aria-pressed="${!!t.done}"><span class="box">${IC.check}</span><span class="t3-t">${esc(t.text)}${d ? `<small>${esc(d)}${t.to ? ` · ${esc(t.to)}에게 보고` : ''}</small>` : ''}</span></button>${report}<button class="icon-btn" data-act="t3-edit" data-arg="${t.id}" aria-label="수정">${IC.edit}</button></div>`;
   });
@@ -684,11 +688,31 @@ function routineHtml(day) {
       else if (s.check === 'focus') btn = `<button class="btn sm ${pri}" data-act="focus" data-arg="25${open ? ':' + open.id : ''}">시작</button>`;
       else btn = `<button class="btn sm ${pri}" data-act="rt-done" data-arg="${esc(s.id)}">했어요</button>`;
     }
-    let hint = s.hint || '';
+    let hint = s.done ? '' : s.hint || '';
     if (s.check === 'focus' && !s.done && onset) hint = onset > t ? `약 효과가 ${C.fmtTime(onset)}쯤 올라와요. 그때 시작하면 좋아요` : '약 효과가 올라온 시간이에요. 지금이 좋아요';
     if (s.check === 'top3' && !s.done && open) hint = `"${open.text}" 마감 시각만 정하면 돼요. 정한 시각이 오늘의 외부 마감이에요`;
-    return `<div class="rt-row ${s.done ? 'done' : ''} ${s === next ? 'next' : ''}"><span class="box">${IC.check}</span><span class="rt-t">${esc(s.text)}${hint ? `<small>${esc(hint)}</small>` : ''}</span>${btn}</div>`;
+    // 단계마다 목표 시각 (일어난 시각 + min분): 지금 할 단계는 "까지", 늦으면 "늦음"
+    const due = s.min != null ? w + s.min * MIN : null;
+    const dueTag = !s.done && due ? (t > due ? `<span class="rt-due late">${Math.round((t - due) / MIN)}분 늦음</span>` : `<span class="rt-due ${s === next ? '' : 'dim'}">${s === next ? '' : '~'}${C.fmtTime(due)}${s === next ? '까지' : ''}</span>`) : '';
+    return `<div class="rt-row ${s.done ? 'done' : ''} ${s === next ? 'next' : ''}"><span class="box">${IC.check}</span><span class="rt-t">${s.icon ? `${esc(s.icon)} ` : ''}${esc(s.text)} ${dueTag}${hint ? `<small>${esc(hint)}</small>` : ''}</span>${btn}</div>`;
   }).join('');
+  // 집 밖으로 나가는 마감 (스피드런): 목표 = 일어나고 N분, 평일엔 늦어도 정한 시각
+  const go = def?.routineGo, outStep = go && steps.find(s => s.id === (go.step || 'out'));
+  let goBar = '';
+  if (outStep && !outStep.done) {
+    const goal = w + (go.min || 60) * MIN;
+    // 평일 출근 마감은 그 시각 전에 일어났을 때만 (그 뒤에 일어난 날은 일어난 시각 기준으로만 잰다)
+    const cap = go.weekday && ![0, 6].includes(C.keyToDate(day.date).getDay()) ? C.tsFor(day.date, go.weekday, rollover()) : null;
+    const hard = cap && w < cap ? cap : null;
+    const target = hard ? Math.min(goal, hard) : goal;
+    const mins = ms => Math.max(1, Math.ceil(ms / MIN));
+    let txt;
+    if (t <= target) txt = `<b>${C.fmtTime(target)}</b>까지 <b>${mins(target - t)}분</b>`;
+    else if (hard && t <= hard) txt = `목표 ${C.fmtTime(target)} 지남 · 늦어도 <b>${C.fmtTime(hard)}</b>까지 <b>${mins(hard - t)}분</b>`;
+    else txt = `<b>${Math.round((t - (hard || target)) / MIN)}분</b> 늦었어요. 남은 단계는 건너뛰고 지금 나가요`;
+    const cls = t > (hard || target) ? 'late' : t > target || target - t <= 10 * MIN ? 'soon' : '';
+    goBar = `<div class="rt-go ${cls}">🚪 ${esc(go.label || '집 밖으로')} ${txt}</div>`;
+  }
   // 오늘 집중 시간표 (예정된 약까지 넣어서). 평소 잠드는 시각 30분 전에서 끊는다
   const cut = mc?.sleepAt ? mc.sleepAt - 30 * MIN : null;
   let clipped = false;
@@ -701,14 +725,14 @@ function routineHtml(day) {
     const pk = clip(G.peak).map(span2).join(', ');
     return eff ? `오늘 집중하기 좋은 시간 ${eff}${pk ? ` · 가장 높음 ${pk}` : ''}${G.projEffect?.length ? ' (예정 약 포함)' : ''}` : '';
   }).filter(Boolean).join('<br>') + (clipped ? `<br>평소 잠드는 ${C.fmtTime(mc.sleepAt)} 30분 전까지만 적었어요` : '');
-  return win(`아침 루틴 ${n}/${steps.length}`, 'MORNING', `${rows}${plan ? `<p class="rt-plan">${plan}</p>` : ''}`, 'routine', `<button class="icon-btn" data-act="rt-close" aria-label="아침 루틴 닫기">${IC.x}</button>`);
+  return win(`아침 루틴 ${n}/${steps.length}`, 'MORNING', `${goBar}${rows}${plan ? `<p class="rt-plan">${plan}</p>` : ''}`, 'routine', `<button class="icon-btn" data-act="rt-close" aria-label="아침 루틴 닫기">${IC.x}</button>`);
 }
 
 // ---------- 금요일 5줄 보고 ----------
 const reportCfg = () => store.game()?.report || { to: '', nums: [] };
 function weekFacts(endKey) {
   const days = C.lastDays(endKey, 7).map(getDay).filter(Boolean);
-  const done = days.flatMap(d => C.top3Of(d).filter(t => t.done).map(t => t.text));
+  const done = days.flatMap(d => C.top3Of(d).filter(t => t.done).map(t => (t.out ? `${t.text} (${t.out})` : t.text)));
   const count = id => days.reduce((a, d) => a + C.live(d).filter(e => e.item === id).length, 0);
   const focus = days.reduce((a, d) => a + C.live(d).filter(e => e.item === 'focus').reduce((x, e) => x + (e.min || 0), 0), 0);
   const counts = C.activeItems(cfg()).filter(i => i.type === 'count' && !['water', 'coffee'].includes(i.id) || i.goal?.total).map(i => [i, count(i.id)]).filter(([, n]) => n);
@@ -1453,9 +1477,11 @@ function openTop3Sheet(id) {
     save() {
       const text = v('text').trim();
       if (!text) return clear();
-      const hm = v('due');
-      store.setTop3(key, id, { text, due: hm ? C.tsFor(key, hm, rollover()) : 0, to: v('to').trim() || '' });
+      const hm = v('due'), due = hm ? C.tsFor(key, hm, rollover()) : 0, to = v('to').trim() || '';
+      store.setTop3(key, id, { text, due, to });
       closeSheet();
+      // 마감을 폰 알림으로도: 앱을 닫아 둬도 캘린더가 울린다
+      if (due && due > now() && due !== cur?.due) toast(`마감 ${C.fmtTime(due)} 저장`, { label: '📅 폰 알림', fn: () => calAlarm(text, due, to) });
     },
     'due-in'(m) {
       $('#sheet [name="due"]').value = C.fmtTime(now() + m * MIN);
@@ -1463,6 +1489,27 @@ function openTop3Sheet(id) {
     clear,
     carry(text) {
       $('#sheet [name="text"]').value = text;
+    },
+  });
+}
+
+// 마감을 구글 캘린더 일정으로 연다 (저장은 캘린더에서 한 번 누름). 캘린더 기본 알림이 시작 전에 울린다
+function calAlarm(text, due, to) {
+  const f = ts => new Date(ts).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const q = new URLSearchParams({ action: 'TEMPLATE', text: `⏰ 마감 · ${text}`, dates: `${f(due)}/${f(due + 10 * MIN)}`, details: `${to ? `${to}에게 보고해요. ` : ''}끝내면 앱에서 체크: ${location.origin}${location.pathname}` });
+  window.open(`https://calendar.google.com/calendar/render?${q}`, '_blank', 'noopener');
+}
+
+// 끝낸 일의 결과물 한 줄 (링크도): 금요일 보고의 "이번 주 한 것"에 같이 들어간다
+function openOutSheet(key, id) {
+  const t = (store.day(key).top3 || []).find(x => x.id === id && !x.del);
+  if (!t) return;
+  openSheet('결과물 한 줄', 'DONE', `<p class="lead">${esc(t.text)}</p><label class="fld"><span>무엇을 냈어요? (링크도 OK)</span><input name="out" maxlength="120" value="${esc(t.out || '')}" autocomplete="off" autofocus placeholder="예: 풀이 올림, 데모 링크"></label><div class="row-btns"><button class="btn pri" data-act="save">남기기</button></div>`, {
+    save() {
+      const o = v('out').trim();
+      store.setTop3(key, id, { out: o });
+      closeSheet();
+      if (o) toast('결과물 남겼어요');
     },
   });
 }
@@ -2040,8 +2087,12 @@ const actions = {
     render();
   },
   'rt-done'(id) {
-    store.logEvent(todayKey(), 'rt:' + id);
+    const key = todayKey();
+    store.logEvent(key, 'rt:' + id);
     haptic(10);
+    // 집 밖으로 나간 순간: 일어나고 몇 분 걸렸는지 (스피드런 기록)
+    const go = store.game()?.routineGo, w = C.wakeOf(store.day(key));
+    if (go && id === (go.step || 'out') && w) toast(`🚪 출발 ${C.fmtTime(now())} · 일어나고 ${Math.round((now() - w) / MIN)}분`);
   },
   'rt-close'() {
     store.setLocal({ seen: { ...local().seen, ['rt:' + todayKey()]: 1 } });
@@ -2118,8 +2169,10 @@ const actions = {
   't3-edit': id => openTop3Sheet(id),
   't3-toggle'(id) {
     const key = viewKey(), t = store.day(key).top3.find(x => x.id === id);
-    store.setTop3(key, id, { done: t?.done ? 0 : now() });
+    const done = !t?.done;
+    store.setTop3(key, id, { done: done ? now() : 0 });
     haptic(12);
+    if (done) toast('끝! 결과물 한 줄 남길까요?', { label: '한 줄', fn: () => openOutSheet(key, id) });
   },
   cond(arg) {
     const [id, n] = arg.split(':'), key = todayKey();

@@ -600,3 +600,10 @@ summary{font-family:var(--font-display);font-size:14.5px;cursor:pointer;min-heig
 .dp-row.on{background:var(--gold-soft);border-radius:10px;border-bottom-color:transparent}
 .dp-t{font-family:var(--font-display);font-size:13px;color:var(--ink-soft);padding-top:1px}
 .dp-b small{display:block;font-size:12px;color:var(--ink-soft);margin-top:2px}
+.rt-go{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin:0 0 8px;padding:9px 12px;border-radius:12px;background:var(--well);border:2px solid var(--well-line);font-size:15px;line-height:1.4}
+.rt-go b{font-family:var(--font-display);font-weight:400}
+.rt-go.soon{border-color:var(--accent);background:var(--gold-soft)}
+.rt-go.late{border-color:var(--minus,#c0392b);color:var(--minus,#c0392b)}
+.rt-due{display:inline-block;font-size:12px;font-family:var(--font-display);color:var(--accent);white-space:nowrap}
+.rt-due.dim{color:var(--ink-mute)}
+.rt-due.late{color:var(--minus,#c0392b)}
