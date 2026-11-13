@@ -109,6 +109,17 @@ test('메인 퀘스트: 수동 과제는 기록 이벤트로, 자동 과제는 �
   assert.equal(GM.questState({ stages: [] }, { days }), null);
 });
 
+test('지표: withNote면 글이 있는 기록만 센다 (빈 줄은 30줄에 안 들어간다)', () => {
+  const now = clock(at(9, 0, 20));
+  const store = createStore({ storage: new MemoryStorage(), now });
+  store.saveItem({ id: 'pain_note', name: '불편 한 줄', icon: '📝', cat: 'habit', type: 'log', ask: 'note', block: 'any' });
+  store.logEvent('2026-11-20', 'pain_note', { t: at(10, 0, 20), note: '배달 접음' });
+  store.logEvent('2026-11-20', 'pain_note', { t: at(11, 0, 20) });
+  const ctx = { cfg: store.config(), days: [store.day('2026-11-20')], todayKey: '2026-11-20' };
+  assert.equal(GM.metricValue({ type: 'item_total', item: 'pain_note' }, ctx), 2);
+  assert.equal(GM.metricValue({ type: 'item_total', item: 'pain_note', withNote: true }, ctx), 1);
+});
+
 test('아침 루틴: 기록에서 단계를 확인한다', () => {
   const now = clock(at(9, 0));
   const store = createStore({ storage: new MemoryStorage(), now });

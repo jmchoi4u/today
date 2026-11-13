@@ -583,3 +583,6 @@ summary{font-family:var(--font-display);font-size:14.5px;cursor:pointer;min-heig
   .burst.go{animation-duration:.01s}
   .mini-bar i,.hud-exp i,.track .fill,.tile{transition:none}
 }
+.note-time{margin:2px 0 12px}
+.note-time summary{cursor:pointer;color:var(--ink-soft);font-size:13px;padding:6px 0}
+.note-time[open] summary{margin-bottom:8px}

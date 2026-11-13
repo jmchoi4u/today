@@ -7,7 +7,7 @@ import * as PK from './pk.js';
 import * as GM from './game.js';
 import * as WX from './weather.js';
 
-const VERSION = '1.4.1';
+const VERSION = '1.4.2';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1131,6 +1131,11 @@ function openSheet(title, tag, body, acts = {}) {
 function closeSheet(fromPop) {
   const el = $('#sheet');
   if (el.hidden) return;
+  try {
+    sheetActs.beforeClose?.(); // 저장 버튼 없이 닫을 때 쓴 글을 살리거나 빈 기록을 치운다
+  } catch {
+    /* 닫기는 계속한다 */
+  }
   el.hidden = true;
   el.innerHTML = '';
   sheetActs = {};
@@ -1242,10 +1247,12 @@ function openTileSheet(id) {
   });
 }
 
-function openEventSheet(id, key = viewKey()) {
+function openEventSheet(id, key = viewKey(), { fresh = false } = {}) {
   const e = store.day(key).events.find(x => x.id === id && !x.del);
   if (!e) return;
   const it = nameOf(e.item);
+  // 글이 본체인 기록(예: 사장님 불편 한 줄)은 쓰는 칸이 먼저, 시각 고치기는 접어 둔다
+  if (it.noteFirst && it.ask === 'note') return openNoteSheet(e, it, key, fresh);
   const isCond = e.item === 'energy' || e.item === 'mood', hasMin = e.item === 'focus' || it.ask === 'min', isNum = it.ask === 'num', isMeal = it.cat === 'meal';
   const u = usualFor(itemById(e.item), key), presets = [];
   if (key === todayKey()) presets.push([now(), '지금']);
@@ -1274,6 +1281,45 @@ function openEventSheet(id, key = viewKey()) {
       store.deleteEvent(key, id);
       closeSheet();
       toast('기록을 지웠어요');
+    },
+  });
+}
+
+// 글이 본체인 기록: 쓰는 칸이 맨 위에 있고 키보드가 바로 뜬다. 새로 연 기록을 빈 채로 닫으면 남기지 않는다
+function openNoteSheet(e, it, key, fresh) {
+  const presets = key === todayKey() ? [[now(), '지금']] : [];
+  let done = false;
+  const body = `<label class="fld"><span>${esc(it.name)}</span><textarea name="note" rows="3" maxlength="200" autofocus autocomplete="off" placeholder="${esc(it.example || '들은 말 그대로 한 줄')}">${esc(e.note || '')}</textarea></label>
+    <details class="note-time"><summary>${C.fmtTime(e.t)}에 남김 · 시각 고치기</summary>${twHtml(key, e.t, presets)}</details>
+    <div class="row-btns"><button class="btn pri" data-act="save">남기기</button><button class="btn danger" data-act="del">${fresh ? '안 쓸래요' : '기록 삭제'}</button></div>`;
+  const finish = note => {
+    if (!note) {
+      store.deleteEvent(key, e.id);
+      return toast(fresh ? '빈 줄은 남기지 않았어요' : '기록을 지웠어요');
+    }
+    const patch = { note };
+    if (Math.round(tw.t / MIN) !== Math.round(e.t / MIN)) patch.t = tw.t;
+    store.updateEvent(key, e.id, patch);
+    toast(fresh ? '한 줄 남겼어요' : '고쳤어요');
+  };
+  openSheet(`${it.icon} ${it.name}`, 'NOTE', body, {
+    save() {
+      done = true;
+      finish(v('note').trim());
+      closeSheet();
+    },
+    del() {
+      done = true;
+      store.deleteEvent(key, e.id);
+      closeSheet();
+      toast(fresh ? '빈 줄은 남기지 않았어요' : '기록을 지웠어요');
+    },
+    beforeClose() {
+      if (done) return;
+      done = true;
+      const n = v('note').trim();
+      if (fresh) finish(n); // 쓴 글은 살리고, 빈 기록은 치운다
+      else if (n && n !== (e.note || '')) finish(n);
     },
   });
 }
@@ -1964,7 +2010,7 @@ const actions = {
     if (it.type === 'log' && it.ask === 'note' && it.noteFirst) {
       const ev = store.logEvent(key, it.id, { autoWake: true });
       afterLog(it, key, ev);
-      return openEventSheet(ev.id, key);
+      return openEventSheet(ev.id, key, { fresh: true });
     }
     addAt(it, key);
   },

@@ -94,7 +94,7 @@ export function metricValue(m, { cfg, days, todayKey, rollover = 4 }) {
     let n = 0;
     for (const d of days) {
       if (!d || (m.from && d.date < m.from)) continue;
-      for (const e of C.live(d)) if (e.item === m.item) n++;
+      for (const e of C.live(d)) if (e.item === m.item && (!m.withNote || e.note)) n++; // withNote: 글이 있는 기록만
     }
     return n;
   }
