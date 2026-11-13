@@ -1,0 +1,17 @@
+{
+  "name": "오늘 — 하루 퀘스트",
+  "short_name": "오늘",
+  "description": "약, 루틴, 식사, 집중을 한 번 탭으로 기록하는 하루 추적기",
+  "lang": "ko",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#a6dbf6",
+  "theme_color": "#a6dbf6",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
