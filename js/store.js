@@ -8,6 +8,7 @@ export const keyOfPath = path => (path.startsWith('days/') ? path.slice(-15, -5)
 const K_CFG = 'today.cfg';
 const K_DAY = 'today.day.';
 const K_LOCAL = 'today.local';
+const K_MEDS = 'today.meds'; // 약 정보: 비공개 저장소의 meds.json을 받아 둔 것 (앱에서는 읽기만)
 
 const LOCAL_DEFAULTS = {
   gh: null, // { repo, token } 이 기기에만 저장. 동기화 대상 아님
@@ -48,6 +49,9 @@ export function createStore({ storage, now = Date.now } = {}) {
   let hasCfg = !!cfgSaved;
   const days = new Map();
   let local = { ...LOCAL_DEFAULTS, ...(read(K_LOCAL) || {}) };
+  const validMeds = m => !!m && typeof m === 'object' && Array.isArray(m.drugs);
+  let meds = read(K_MEDS);
+  if (!validMeds(meds)) meds = null;
 
   const emit = kind => subs.forEach(fn => fn(kind));
   const saveLocal = () => write(K_LOCAL, local);
@@ -186,6 +190,22 @@ export function createStore({ storage, now = Date.now } = {}) {
     if (d) Object.assign(d, { del: true, m });
   });
 
+  // ----- 약 정보 (동기화로만 들어온다) -----
+  function setMeds(doc) {
+    const next = validMeds(doc) ? doc : null;
+    if (canon(next) === canon(meds)) return;
+    meds = next;
+    if (meds) write(K_MEDS, meds);
+    else {
+      try {
+        storage.removeItem(K_MEDS);
+      } catch {
+        /* 지울 수 없는 저장소 */
+      }
+    }
+    emit('remote');
+  }
+
   // ----- 기기 전용 값 -----
   function setLocal(patch, silent) {
     local = { ...local, ...patch };
@@ -260,13 +280,14 @@ export function createStore({ storage, now = Date.now } = {}) {
 
   // ----- 내보내기/가져오기 -----
   function exportAll() {
-    const out = { app: 'today', v: 1, exportedAt: now(), config: cfg, days: {} };
+    const out = { app: 'today', v: 1, exportedAt: now(), config: cfg, meds, days: {} };
     for (const k of dayKeys()) out.days[k] = day(k);
     return out;
   }
   function importAll(data) {
     if (!data || data.app !== 'today' || typeof data.days !== 'object') throw new Error('오늘 앱의 백업 파일이 아니에요');
     let n = 0;
+    if (validMeds(data.meds)) setMeds(data.meds);
     if (validConfig(data.config)) {
       applyRemote(CFG_PATH, data.config);
       markDirty(CFG_PATH);
@@ -292,6 +313,9 @@ export function createStore({ storage, now = Date.now } = {}) {
       }
     } else if (storageKey === K_LOCAL) {
       local = { ...LOCAL_DEFAULTS, ...(read(K_LOCAL) || {}) };
+    } else if (storageKey === K_MEDS) {
+      const m = read(K_MEDS);
+      meds = validMeds(m) ? m : null;
     } else if (storageKey.startsWith(K_DAY)) {
       days.delete(storageKey.slice(K_DAY.length));
     }
@@ -306,6 +330,9 @@ export function createStore({ storage, now = Date.now } = {}) {
     dayKeys,
     local: () => local,
     setLocal,
+    meds: () => meds?.drugs || [],
+    medsDoc: () => meds,
+    setMeds,
     failed: () => failed,
     logEvent, updateEvent, deleteEvent,
     setWake, setSleep, setReview, setLite, setTop3, setSkip, setMiss,

@@ -1,7 +1,7 @@
 // 오프라인에서도 열리게 앱 파일을 보관한다.
 // 앱 파일은 네트워크 우선(새 버전이 바로 반영됨), 실패하면 보관본. 글꼴은 보관본 우선. GitHub API는 건드리지 않는다.
-const CACHE = 'today-v2';
-const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/core.js', 'js/store.js', 'js/sync.js', 'js/chart.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
+const CACHE = 'today-v3';
+const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/core.js', 'js/store.js', 'js/sync.js', 'js/chart.js', 'js/pk.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 const FONT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', e => {

@@ -86,7 +86,7 @@ test('바뀐 것이 없으면 다시 받지 않는다', async () => {
   await a.connect();
   gh.log.length = 0;
   await a.sync.syncNow();
-  assert.deepEqual(gh.log, ['GET /repos/me/today-data/contents/config.json', 'GET /repos/me/today-data/contents/days/2026'], '목록만 확인하고 파일은 받지 않는다');
+  assert.deepEqual(gh.log, ['GET /repos/me/today-data/contents/config.json', 'GET /repos/me/today-data/contents/meds.json', 'GET /repos/me/today-data/contents/days/2026'], '목록만 확인하고 파일은 받지 않는다');
   gh.log.length = 0;
   a.store.logEvent(KEY, 'water');
   await a.sync.syncNow({ pull: false });
@@ -153,6 +153,26 @@ test('원격 파일이 깨져 있으면 내 기록으로 덮어쓴다', async ()
   assert.equal(gh.read(PATH).events.length, 1);
   await b.connect();
   assert.equal(C.live(b.store.day(KEY)).length, 1);
+});
+
+test('약 정보(meds.json)는 받기만 하고, 바뀌었을 때만 다시 받는다', async () => {
+  const gh = fakeGitHub(), now = clock(at(8));
+  const meds = { v: 1, drugs: [{ id: 'a', name: '약 A', kind: 'curve', halfLife: 3, parts: [{ f: 1, ka: 2 }] }] };
+  gh.files.set('meds.json', { content: b64enc(JSON.stringify(meds)), sha: 'm1' });
+  const a = device(gh, now);
+  await a.connect();
+  assert.deepEqual(a.store.meds().map(d => d.id), ['a']);
+  assert.ok(!gh.log.some(l => l.startsWith('PUT') && l.includes('meds.json')), '앱은 약 정보를 올리지 않는다');
+  gh.log.length = 0;
+  await a.sync.syncNow();
+  assert.equal(gh.log.filter(l => l.includes('meds.json')).length, 1, '확인 요청은 한 번 (바뀐 게 없으면 304)');
+  meds.drugs.push({ id: 'b', name: '약 B', kind: 'steady' });
+  gh.files.set('meds.json', { content: b64enc(JSON.stringify(meds)), sha: 'm2' });
+  await a.sync.syncNow();
+  assert.deepEqual(a.store.meds().map(d => d.id), ['a', 'b']);
+  gh.files.delete('meds.json');
+  await a.sync.syncNow();
+  assert.deepEqual(a.store.meds(), [], '저장소에서 지우면 기기에서도 사라진다');
 });
 
 test('연결을 끊으면 토큰이 지워지고 기록은 남는다', async () => {

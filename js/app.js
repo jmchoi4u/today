@@ -2,9 +2,10 @@
 import * as C from './core.js';
 import { createStore } from './store.js';
 import { createSync } from './sync.js';
-import { stripSvg, flowSvg } from './chart.js';
+import { stripSvg, flowSvg, medSvg, peakSvg } from './chart.js';
+import * as PK from './pk.js';
 
-const VERSION = '1.1';
+const VERSION = '1.2';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -15,7 +16,7 @@ const cfg = () => store.config();
 const local = () => store.local();
 const rollover = () => cfg().prefs?.rollover ?? 4;
 const todayKey = () => C.dayKey(now(), rollover());
-const ui = { tab: 'today', date: null, just: null };
+const ui = { tab: 'today', date: null, just: null, peakMode: 'dose', peakRating: 'attn' };
 const viewKey = () => ui.date || todayKey();
 const isToday = () => viewKey() === todayKey();
 const getDay = k => (store.hasDay(k) ? store.day(k) : null);
@@ -92,6 +93,37 @@ function itemChainN(it) {
   }
   return c.items.get(it.id);
 }
+
+// ---------- 약 효과 계산 (약 정보는 비공개 저장소의 meds.json에서) ----------
+const profiles = () => store.meds();
+const profileById = id => profiles().find(p => p.id === id);
+function typicalSleepTs(key) {
+  const m = C.typicalSleep(C.lastDays(C.addDays(key, -1), 14).map(getDay), rollover());
+  return m == null ? null : C.dayStartTs(key, rollover()) + m * MIN;
+}
+let medMemo = { k: '' };
+function medCtx(key = viewKey()) {
+  const k = `${ver}|${key}|${Math.floor(now() / (5 * MIN))}|${profiles().length}`;
+  if (medMemo.k === k) return medMemo.v;
+  let v = null;
+  const P = profiles();
+  if (P.length) {
+    const items = C.activeItems(cfg(), key);
+    const doses = PK.dosesOf([getDay(C.addDays(key, -1)), getDay(key)], items, P);
+    const today = doses.filter(d => d.date === key);
+    const day = getDay(key), wake = C.wakeOf(day), lo = C.dayStartTs(key, rollover());
+    const t0 = Math.max(lo, Math.min(wake || lo + 4 * HOUR, today[0]?.t ?? Infinity) - 30 * MIN);
+    const sleepAt = typicalSleepTs(key);
+    const ends = today.filter(d => d.p.kind === 'curve').map(d => PK.plan(d.p, d.t).end + 30 * MIN);
+    const t1 = Math.min(t0 + 24 * HOUR, Math.max(t0 + 16 * HOUR, ...ends, sleepAt ? sleepAt + 40 * MIN : 0, key === todayKey() ? now() + HOUR : 0));
+    const sr = PK.series(doses.filter(d => d.p.kind === 'curve'), t0, t1);
+    const groups = sr.groups.map(G => ({ ...G, ...PK.groupStatus(G, sr.ts, now()) })).filter(G => G.max);
+    v = { key, items, doses, today, ts: sr.ts, groups, t0, t1, sleepAt, wake };
+  }
+  medMemo = { k, v };
+  return v;
+}
+const medBands = key => (medCtx(key)?.groups || []).flatMap(G => G.effect);
 
 // ---------- 공통 조각 ----------
 
@@ -181,17 +213,55 @@ function retroHtml() {
 function stripHtml(day, today) {
   const w = C.wakeOf(day), sl = C.sleepOf(day), p = C.progress(day, cfg());
   const end = sl ? '🌙 ' + C.fmtTime(sl) : w ? '~' + C.fmtTime(w + C.AWAKE_HOURS * HOUR) : '';
-  return `<section class="win"><button class="strip-btn" data-act="tab" data-arg="flow" aria-label="오늘 흐름 자세히 보기">${stripSvg(day, cfg(), now(), today)}
+  return `<section class="win"><button class="strip-btn" data-act="tab" data-arg="flow" aria-label="오늘 흐름 자세히 보기">${stripSvg(day, cfg(), now(), today, medBands(day.date))}
     <span class="strip-meta"><span>${w ? '☀️ ' + C.fmtTime(w) : '기상 기록 없음'}</span><span>필수 <b>${p.essDone}/${p.essTotal}</b> · 전체 <b>${p.done}/${p.total}</b></span><span>${end}</span></span></button></section>`;
 }
 
 function coachList(day) {
   const tk = todayKey();
   const hist = C.lastDays(C.addDays(tk, -1), 14).map(getDay);
-  const list = C.coach({ now: now(), day, cfg: cfg(), local: local(), typical: C.typicalWake(hist), chain: chainNow() });
+  const mc = medCtx(tk);
+  const windows = (mc?.groups || []).flatMap(G => G.effect.map(([a, b]) => ({ start: a, end: b, name: G.name })));
+  const list = C.coach({ now: now(), day, cfg: cfg(), local: local(), typical: C.typicalWake(hist), chain: chainNow(), windows });
   if (list[0].key === 'start' || list[0].key === 'closed') return list;
   const l = local(), sn = k => (l.snooze?.[k] || 0) > now();
   const extra = [];
+  if (mc) {
+    const t = now();
+    // 약 먹고 1·3·6·9시간쯤(약마다 다름) 집중도를 한 번씩 묻는다 → 내 피크 그래프의 재료
+    const lastAttn = C.live(day).filter(e => e.item === 'attn').pop();
+    if (!lastAttn || t - lastAttn.t > 60 * MIN) {
+      const asked = new Set();
+      for (const d of mc.today) {
+        if (d.p.kind !== 'curve' || asked.has(d.p.id)) continue;
+        asked.add(d.p.id);
+        for (const hh of d.p.checks || [1, 3, 6, 9]) {
+          const k = `attn:${d.ev}:${hh}`;
+          if (Math.abs(t - (d.t + hh * HOUR)) <= 40 * MIN && !sn(k)) {
+            extra.push({ pri: 24, key: k, icon: '🧠', tone: 'calm', title: `${d.p.name} 먹은 지 ${hh}시간, 지금 집중 어때요?`, sub: '한 번 누르면 내 피크 그래프가 정확해져요', scale: 'attn' });
+          }
+        }
+      }
+    }
+    // 효과 구간이 막 끝난 때
+    for (const G of mc.groups) {
+      const last = G.effect[G.effect.length - 1];
+      if (last && t > last[1] && t - last[1] < 60 * MIN && !sn('wear:' + G.group)) {
+        extra.push({ pri: 44, key: 'wear:' + G.group, icon: '🌇', tone: 'calm', title: '약 효과가 내려가는 시간이에요', sub: '머리를 덜 쓰는 일로 바꾸거나 잠깐 쉬어요. 이때 피곤하거나 예민해지면 기록해 둬요' });
+      }
+    }
+    // 각성 계열 약을 늦게 먹으려 할 때: 효과가 평소 잠드는 시각까지 가는지 알려준다
+    for (const s of list) {
+      if (s.key.startsWith('do:') && mc.sleepAt) {
+        const stim = (itemById(s.key.slice(3))?.drugs || []).map(x => profileById(x.id)).filter(p => p?.kind === 'curve' && p.stim);
+        if (stim.length) {
+          const end = Math.max(...stim.map(p => PK.plan(p, t).end));
+          if (end > mc.sleepAt - 60 * MIN) s.sub = `지금 먹으면 효과가 ${C.fmtTime(end)}쯤까지 가요. 평소 잠드는 ${C.fmtTime(mc.sleepAt)}에 가까워요`;
+        }
+      }
+      if (s.key.startsWith('meal:') && mc.groups.some(G => G.nowRel >= PK.EFFECT && G.parts.some(P => P.dose.p.appetite))) s.sub += ' · 약 효과 중엔 배고픔을 덜 느낄 수 있어요';
+    }
+  }
   const se = season();
   if (se.left === 0 && !sn('season')) extra.push({ pri: 38, key: 'season', icon: '🏁', tone: 'now', title: `시즌 ${se.n} 마지막 날이에요`, sub: '2주 결과를 확인하고 보고해요', action: { label: '결과 보기', act: 'tab', arg: 'week' } });
   if (!l.seen.setup && !sn('setup')) extra.push({ pri: 50, key: 'setup', icon: '🛠️', tone: 'calm', title: '기본 항목을 내 루틴으로 바꿔요', sub: '약 이름, 시간대, 필수 여부를 설정에서 고칠 수 있어요', action: { label: '설정 열기', act: 'tab', arg: 'set' }, alt: { label: '괜찮아요', act: 'seen', arg: 'setup' } });
@@ -205,7 +275,8 @@ function coachHtml(day) {
   if (s.action) btns.push(`<button class="btn pri" data-act="coach" data-arg="action">${esc(s.action.label)}</button>`);
   if (s.alt) btns.push(`<button class="btn" data-act="coach" data-arg="alt">${esc(s.alt.label)}</button>`);
   if (!['clear', 'closed', 'start'].includes(s.key)) btns.push('<button class="btn ghost" data-act="coach-later">나중에</button>');
-  return `<section class="win coach tone-${s.tone}"><div class="say">${MOCHI}<div><b>${esc(s.icon)} ${esc(s.title)}</b><p>${esc(s.sub || '')}</p></div></div>${btns.length ? `<div class="row-btns">${btns.join('')}</div>` : ''}</section>`;
+  const scale = s.scale ? `<div class="scale-dots coach-scale" role="group" aria-label="${esc(C.SPECIAL[s.scale]?.name || '')} 1부터 5">${[1, 2, 3, 4, 5].map(n => `<button class="dot" data-act="cond" data-arg="${s.scale}:${n}">${n}</button>`).join('')}</div>` : '';
+  return `<section class="win coach tone-${s.tone}"><div class="say">${MOCHI}<div><b>${esc(s.icon)} ${esc(s.title)}</b><p>${esc(s.sub || '')}</p></div></div>${scale}${btns.length ? `<div class="row-btns">${btns.join('')}</div>` : ''}</section>`;
 }
 
 function top3Html(day) {
@@ -273,8 +344,8 @@ function condHtml(day) {
     const l = lastOf(id);
     return `<div class="scale"><span class="scale-l">${icon} ${label}</span><div class="scale-dots" role="group" aria-label="${label} 1부터 5">${[1, 2, 3, 4, 5].map(n => `<button class="dot ${l?.v === n ? 'on' : ''}" data-act="cond" data-arg="${id}:${n}" aria-pressed="${l?.v === n}">${n}</button>`).join('')}</div></div>`;
   };
-  const last = Math.max(lastOf('energy')?.t || 0, lastOf('mood')?.t || 0);
-  return `<section class="win" id="cond"><div class="win-head"><h2>컨디션</h2>${last ? `<span class="win-count">${C.fmtTime(last)}</span>` : ''}<span class="win-tag">STATE</span></div><div class="win-body">${row('energy', '에너지', '⚡')}${row('mood', '기분', '🙂')}</div></section>`;
+  const last = Math.max(lastOf('energy')?.t || 0, lastOf('mood')?.t || 0, lastOf('attn')?.t || 0);
+  return `<section class="win" id="cond"><div class="win-head"><h2>컨디션</h2>${last ? `<span class="win-count">${C.fmtTime(last)}</span>` : ''}<span class="win-tag">STATE</span></div><div class="win-body">${row('energy', '에너지', '⚡')}${row('mood', '기분', '🙂')}${row('attn', '집중도', '🧠')}</div></section>`;
 }
 
 const mmss = ms => {
@@ -324,7 +395,7 @@ function todayHtml() {
 function flowHtml() {
   const key = viewKey(), day = store.day(key), today = isToday(), evs = C.live(day);
   const w = C.wakeOf(day), sl = C.sleepOf(day);
-  let h = win(`${today ? '오늘' : C.fmtDate(key)} 흐름`, 'FLOW', evs.length || w ? flowSvg(day, cfg(), now(), today) : '<p class="empty">아직 기록이 없어요. 오늘 탭에서 타일을 눌러 시작해요.</p>');
+  let h = win(`${today ? '오늘' : C.fmtDate(key)} 흐름`, 'FLOW', evs.length || w ? flowSvg(day, cfg(), now(), today, medBands(key)) : '<p class="empty">아직 기록이 없어요. 오늘 탭에서 타일을 눌러 시작해요.</p>');
   const rows = [];
   const row = (t, icon, name, detail, act, arg = '') =>
     `<button class="row" data-act="${act}" data-arg="${esc(arg)}"><span class="row-t">${C.fmtTime(t)}</span><span class="row-ic">${esc(icon)}</span><span class="row-b">${esc(name)}${detail ? `<small>${esc(detail)}</small>` : ''}</span><span class="row-go">${IC.right}</span></button>`;
@@ -396,7 +467,9 @@ function weekHtml() {
   const f1 = v => (v == null ? '기록 없음' : v.toFixed(1));
   const kv = [['평균 기상', s.wakeAvg == null ? '기록 없음' : C.fmtMinutesOfDay(s.wakeAvg)], ['평균 수면', s.sleepAvg == null ? '기록 없음' : C.fmtDur(s.sleepAvg * 60)]];
   for (const x of s.counts) kv.push([`${x.item.name} 하루 평균`, `${x.perDay.toFixed(1)}${x.item.unit || '번'}`]);
-  kv.push(['집중 합계', C.fmtDur(s.focusMin)], ['운동 합계', C.fmtDur(s.moveMin)], ['에너지 평균', f1(s.energyAvg)], ['기분 평균', f1(s.moodAvg)], ['하루 점수 평균', f1(s.scoreAvg)]);
+  const attns = d7.filter(Boolean).flatMap(d => C.live(d).filter(e => e.item === 'attn').map(e => e.v));
+  const attnAvg = attns.length ? attns.reduce((a, b) => a + b, 0) / attns.length : null;
+  kv.push(['집중 합계', C.fmtDur(s.focusMin)], ['운동 합계', C.fmtDur(s.moveMin)], ['에너지 평균', f1(s.energyAvg)], ['기분 평균', f1(s.moodAvg)], ['집중도 평균', f1(attnAvg)], ['하루 점수 평균', f1(s.scoreAvg)]);
   for (const x of s.meds) if (x.days) kv.push([x.item.name, `7일 중 ${x.days}일` + (x.afterWake != null ? ` · 기상 후 ${C.fmtDur(x.afterWake)}` : '')]);
   h += win('7일 요약', 'AVG', `<dl class="kv">${kv.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`);
 
@@ -410,6 +483,124 @@ function weekHtml() {
   const rv = k28.slice().reverse().map(k => [k, C.reviewOf(getDay(k))]).filter(([, r]) => r && (r.note || r.score)).slice(0, 7);
   if (rv.length) h += win('최근 회고', 'REVIEW', rv.map(([k, r]) => `<div class="rv"><span>${SCORE[r.score] || '·'}</span><span>${esc(r.note || '한 줄 없음')}<small>${C.fmtDate(k)}</small></span></div>`).join(''));
   return h;
+}
+
+// ---------- 약 탭 ----------
+
+const DISCLAIM = '<p class="disclaimer">허가사항 평균값에 맞춘 일반적인 모양이에요. 느끼는 효과는 사람마다 달라서, 아래 "내 데이터로 본 피크"가 진짜 내 피크예요. 복용 시간과 용량은 처방한 의사와 정해요.</p>';
+const span2 = ([a, b]) => `${C.fmtTime(a)}~${C.fmtTime(b)}`;
+
+function medHtml() {
+  const P = profiles();
+  if (!P.length) {
+    return DISCLAIM + win('약 정보', 'MEDS', `<p class="lead">아직 약 정보가 없어요. 비공개 저장소에 약 정보 파일(meds.json)이 있으면 동기화할 때 받아와요.</p>
+      <div class="row-btns">${local().gh ? '<button class="btn pri" data-act="sync-now">지금 동기화</button>' : '<button class="btn pri" data-act="sync-open">비공개 저장소 연결</button>'}</div>`);
+  }
+  const key = viewKey(), today = key === todayKey(), mc = medCtx(key);
+  const linked = new Set(mc.items.flatMap(i => (i.drugs || []).map(l => l.id)));
+  const unlinked = P.filter(p => !linked.has(p.id));
+  let h = DISCLAIM;
+  if (unlinked.length) h += medLinkHtml(unlinked, mc.items);
+  h += medGraphHtml(mc, today, P, linked);
+  const curves = P.filter(p => p.kind === 'curve' && linked.has(p.id));
+  if (curves.length) h += medPlanHtml(mc, curves);
+  h += medPeakHtml(key);
+  h += win('약 정보', 'INFO', P.map(medInfoHtml).join(''));
+  return h;
+}
+
+function medLinkHtml(unlinked, items) {
+  const rows = items.filter(i => i.cat === 'med').map(i => {
+    const names = (i.drugs || []).map(l => profileById(l.id)?.name).filter(Boolean).map(esc).join(', ');
+    return `<button class="set-row" data-act="item-edit" data-arg="${esc(i.id)}"><span>${esc(i.icon)} ${esc(i.name)}<small>${names || '아직 연결 안 됨'}</small></span><b>연결</b></button>`;
+  }).join('');
+  return win('약 연결하기', 'LINK', `<p class="lead">어떤 타일이 어떤 약인지 연결하면, 타일을 누를 때마다 곡선이 그려져요. 같이 먹는 약은 한 타일에 여러 개 연결해도 돼요.</p>${rows}
+    <p class="hint">아직 연결 안 된 약: ${unlinked.map(p => esc(p.name)).join(', ')}</p>
+    <div class="sugg">${unlinked.map(p => `<button data-act="med-new" data-arg="${esc(p.id)}">+ ${esc(p.name)} 타일 만들기</button>`).join('')}</div>`);
+}
+
+function medGraphHtml(mc, today, P, linked) {
+  const curveDoses = mc.today.filter(d => d.p.kind === 'curve');
+  const steady = P.filter(p => p.kind === 'steady' && linked.has(p.id)).map(p => {
+    const link = mc.items.flatMap(i => i.drugs || []).find(l => l.id === p.id);
+    const took = mc.today.find(d => d.p.id === p.id);
+    let state = '하루 안에서는 거의 평평해요';
+    if (link?.since && link.since <= mc.key) {
+      const n = Math.round((C.keyToDate(mc.key) - C.keyToDate(link.since)) / 86400000) + 1;
+      state = `${Math.floor((n - 1) / 7) + 1}주째 · ${n >= 35 ? '일정하게 유지되는 때' : '아직 쌓이는 중'}`;
+    }
+    return { text: `${p.name} · ${state}${took ? ` · ${C.fmtTime(took.t)} 먹음` : ''}` };
+  });
+  const ratings = C.live(getDay(mc.key) || C.newDay(mc.key)).filter(e => e.item === 'attn').map(e => ({ t: e.t, v: e.v }));
+  const doses = curveDoses.map(d => ({ t: d.t, label: `${C.fmtTime(d.t)} ${d.p.name}` }));
+  const svg = medSvg({ ...mc, doses, steady, ratings, now: now(), isToday: today });
+  const lines = mc.groups.map(G => {
+    let line = `<b>${esc(G.name)}</b> 효과 ${G.effect.map(span2).join(', ') || '없음'} · 가장 높음 ${G.peak.map(span2).join(', ') || '없음'}`;
+    if (today) {
+      let i = mc.ts.findIndex(t => t > now());
+      i = i < 0 ? mc.ts.length - 1 : Math.max(0, i - 1);
+      const a = G.total[i], b = G.total[Math.min(mc.ts.length - 1, i + 2)];
+      const trend = G.nowRel < 0.05 ? '거의 없어요' : b > a * 1.03 ? '오르는 중' : b < a * 0.97 ? '내려가는 중' : '비슷하게 유지';
+      line += `<br>지금 하루 최고의 ${Math.round(G.nowRel * 100)}% · ${trend}`;
+    }
+    const end = G.effect.length ? G.effect[G.effect.length - 1][1] : null;
+    if (end && mc.sleepAt) {
+      const gap = (mc.sleepAt - end) / MIN;
+      line += gap >= 60 ? `<br>효과 끝 ${C.fmtTime(end)} → 평소 잠드는 ${C.fmtTime(mc.sleepAt)}까지 ${C.fmtDur(gap)} 여유` : `<br><span class="warn">효과 끝 ${C.fmtTime(end)}이 평소 잠드는 ${C.fmtTime(mc.sleepAt)}에 가까워요. 잠이 늦어질 수 있어요</span>`;
+    }
+    return `<p class="med-note">${line}</p>`;
+  });
+  if (!mc.groups.length) lines.push(`<p class="muted">${today ? '오늘' : '이날'} 기록된 곡선형 약이 없어요. 연결한 약 타일을 누르면 여기 그려져요.</p>`);
+  const legend = '<div class="legend med-legend"><span><i class="lg-area"></i>약 농도 (같은 성분은 더함)</span><span><i class="lg-eff"></i>효과 구간 (한 번 먹은 최고점의 35%↑)</span><span><i class="lg-peak"></i>하루 중 가장 높음 (80%↑)</span><span><i class="lg-rate"></i>내가 누른 집중도</span></div>';
+  return win(`${today ? '오늘' : C.fmtDate(mc.key)} 약 효과`, 'CURVE', svg + legend + lines.join(''));
+}
+
+function medPlanHtml(mc, curves) {
+  const base = mc.wake || typicalWakeTs(mc.key);
+  if (!base) return win('언제 먹으면 언제까지', 'PLAN', '<p class="lead">일어난 시각을 기록하면, 그 시각 기준으로 계산해서 보여줘요.</p>');
+  const sleepAt = mc.sleepAt;
+  const blocks = curves.map(p => {
+    const rows = [0, 1, 2, 3].map(off => {
+      const t = base + off * HOUR, pl = PK.plan(p, t);
+      const gap = sleepAt ? (sleepAt - pl.end) / MIN : null;
+      const tag = gap == null ? '' : gap >= 60 ? `<span class="ok">잠까지 ${C.fmtDur(gap)}</span>` : '<span class="warn">잠드는 시각과 겹쳐요</span>';
+      return `<tr><th>${off ? `+${off}시간<br>${C.fmtTime(t)}` : `기상 직후<br>${C.fmtTime(t)}`}</th><td>효과 ${C.fmtTime(pl.start)}~${C.fmtTime(pl.end)}<small>가장 높음 ${span2(pl.peak)}</small></td><td>${tag}</td></tr>`;
+    }).join('');
+    return `<h3 class="sub-h">💊 ${esc(p.name)}${p.how?.[0] ? ` <small>· ${esc(p.how[0])}</small>` : ''}</h3><table class="plan">${rows}</table>`;
+  }).join('');
+  return win('언제 먹으면 언제까지', 'PLAN', `<p class="lead">${mc.wake ? '오늘 일어난' : '평소 일어나는'} ${C.fmtTime(base)} 기준이에요. ${sleepAt ? `평소 잠드는 시각은 최근 기록으로 ${C.fmtTime(sleepAt)}예요.` : '취침을 3일 이상 기록하면 잠까지 남는 시간도 보여줘요.'} 처방대로가 기본이고, 시간을 바꾸고 싶으면 이 표를 들고 의사와 이야기해요.</p>${blocks}`);
+}
+
+function medPeakHtml(key) {
+  const mode = ui.peakMode, rating = ui.peakRating, clock = mode === 'clock';
+  const days = C.lastDays(key, 28).map(getDay).filter(Boolean);
+  const doses = PK.dosesOf(days, C.activeItems(cfg()), profiles());
+  const st = PK.peakStats(days, { mode, doses, rating, bins: clock ? 24 : 15, wakeOf: C.wakeOf });
+  const best = PK.bestWindow(st, { width: 2, minN: 2 });
+  const what = rating === 'attn' ? '집중도' : '에너지';
+  const basis = { dose: '그날 첫 약을 먹고', wake: '일어나고', clock: '' }[mode];
+  const text = best
+    ? clock ? `${best.from}시~${best.to}시에 ${what}가 가장 높았어요 (평균 ${best.avg.toFixed(1)}, 기록 ${best.n}개)` : `${basis} ${best.from}~${best.to}시간 사이에 ${what}가 가장 높았어요 (평균 ${best.avg.toFixed(1)}, 기록 ${best.n}개)`
+    : `기록이 더 필요해요. 지금 ${st.total}개예요. 이웃한 두 칸에 2개씩 모이면 보여줘요.`;
+  let fi = -1;
+  st.focus.forEach((f, i) => { if (f > (fi < 0 ? 0 : st.focus[fi])) fi = i; });
+  const focusLine = fi >= 0 ? `<p class="muted">집중 타이머는 ${clock ? `${fi}시대` : `${basis} ${fi}시간대`}에 가장 많이 썼어요 (${C.fmtDur(st.focus[fi])})</p>` : '';
+  const seg = (act, cur, opts) => `<div class="seg sm">${opts.map(([v, l]) => `<button class="${cur === v ? 'on' : ''}" data-act="${act}" data-arg="${v}" aria-pressed="${cur === v}">${l}</button>`).join('')}</div>`;
+  return win('내 데이터로 본 피크', 'PEAK', `<div class="peak-ctl">${seg('peak-mode', mode, [['dose', '약 먹고'], ['wake', '일어나고'], ['clock', '시각']])}${seg('peak-rating', rating, [['attn', '집중도'], ['energy', '에너지']])}</div>
+    ${peakSvg(st, best, { label: i => (clock ? `${i}시` : `${i}h`) })}<p class="peak-t">${text}</p>${focusLine}
+    <p class="hint">최근 4주 기록이에요. 막대 위 숫자는 기록 수예요. 집중도는 오늘 탭의 컨디션에서 누르고, 약 먹고 1·3·6·9시간쯤엔 코치가 물어봐요.</p>`);
+}
+
+function medInfoHtml(p) {
+  const list = xs => (xs?.length ? `<ul class="med-ul">${xs.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '');
+  const facts = (p.facts || []).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+  return `<details class="med-info"><summary>💊 ${esc(p.name)}${p.sub ? ` <small>${esc(p.sub)}</small>` : ''}</summary>
+    ${facts ? `<dl class="med-kv">${facts}</dl>` : ''}
+    ${p.how?.length ? `<h4>먹는 법</h4>${list(p.how)}` : ''}
+    ${p.brain ? `<h4>뇌에서 하는 일</h4><p>${esc(p.brain)}</p>` : ''}
+    ${p.design ? `<h4>왜 이런 모양인지</h4><p>${esc(p.design)}</p>` : ''}
+    ${p.watch?.length ? `<h4>알아둘 것</h4>${list(p.watch)}` : ''}
+    ${p.source ? `<p class="src">출처: ${esc(p.source)}</p>` : ''}</details>`;
 }
 
 // ---------- 설정 탭 ----------
@@ -448,7 +639,7 @@ function setHtml() {
 
 // ---------- 그리기 ----------
 
-const VIEWS = { today: todayHtml, flow: flowHtml, week: weekHtml, set: setHtml };
+const VIEWS = { today: todayHtml, flow: flowHtml, med: medHtml, week: weekHtml, set: setHtml };
 let queued = false, downAt = 0, pending = false;
 function render() {
   // 손가락이 눌려 있는 동안 화면을 바꾸면 탭이 씹힌다. 뗀 뒤에 그린다.
@@ -728,6 +919,30 @@ function openReviewSheet() {
   });
 }
 
+// 항목 편집 안의 "어떤 약이에요?": 약마다 체크, 용량(mg), 매일 쌓이는 약은 먹기 시작한 날
+function drugLinkHtml(it) {
+  const P = profiles();
+  if (!P.length) return '';
+  const links = new Map((it.drugs || []).map(l => [l.id, l]));
+  const rows = P.map(p => {
+    const l = links.get(p.id), id = esc(p.id);
+    return `<div class="drug-row"><label class="chk"><input type="checkbox" name="drug" value="${id}" ${l ? 'checked' : ''}><span>${esc(p.name)}</span></label>
+      <input name="mg-${id}" type="number" inputmode="decimal" step="0.5" min="0" placeholder="mg" value="${l?.mg ?? ''}" aria-label="${esc(p.name)} 용량 mg">
+      ${p.kind === 'steady' ? `<label class="since"><span>시작일</span><input name="since-${id}" type="date" value="${esc(l?.since || '')}" aria-label="${esc(p.name)} 먹기 시작한 날"></label>` : ''}</div>`;
+  }).join('');
+  return `<div class="fld"><span>어떤 약이에요? (같이 먹는 약은 여러 개)</span>${rows}<p class="hint">용량을 넣으면 같은 성분 약이 겹치는 날 곡선이 더 정확해요. 매일 쌓이는 약은 시작일을 넣으면 몇 주째인지 보여줘요.</p></div>`;
+}
+function readDrugLinks() {
+  const out = [...document.querySelectorAll('#sheet [name="drug"]:checked')].map(el => {
+    const id = el.value, mg = parseFloat(v('mg-' + id)), since = v('since-' + id);
+    const link = { id };
+    if (Number.isFinite(mg) && mg > 0) link.mg = mg;
+    if (since) link.since = since;
+    return link;
+  });
+  return out.length ? out : undefined;
+}
+
 function openItemSheet(id, preset) {
   const cur = id ? itemById(id) : null;
   const it = cur || { name: '', icon: '⭐', cat: 'habit', type: 'check', block: 'am', ...preset };
@@ -744,8 +959,8 @@ function openItemSheet(id, preset) {
     <div class="fld2" data-show="count"><label class="fld"><span>하루 목표</span><input name="target" type="number" inputmode="numeric" min="1" max="99" value="${it.target ?? ''}" placeholder="없음"></label><label class="fld"><span>코치 알림 간격 (분)</span><input name="every" type="number" inputmode="numeric" min="10" max="600" value="${it.every ?? ''}" placeholder="없음"></label></div>
     <label class="fld" data-show="count log-num"><span>단위</span><input name="unit" maxlength="4" value="${esc(it.unit || '')}" placeholder="잔, 개, kg" autocomplete="off"></label>
     <label class="fld" data-show="count log-note log-min log-num"><span>누적 목표 (선택)</span><input name="goal" type="number" inputmode="numeric" min="1" max="9999" value="${it.goal?.total ?? ''}" placeholder="예: 30 → 30개 중 몇 개인지 보여줘요"></label>
-    <div data-show-cat="med"><div class="fld2"><label class="fld"><span>효과 시작 (복용 후 분)</span><input name="fxon" type="number" inputmode="numeric" min="0" max="600" value="${it.fx?.on ?? ''}" placeholder="없음"></label><label class="fld"><span>지속 (시간)</span><input name="fxdur" type="number" inputmode="decimal" step="0.5" min="0" max="24" value="${it.fx?.dur ?? ''}" placeholder="없음"></label></div>
-    <p class="hint">효과 구간을 직접 입력하면 그래프에 표시하고, 그 시간에는 집중할 일을 먼저 권해요. 비워 두면 쓰지 않아요.</p></div>
+    <div data-show-cat="med">${drugLinkHtml(it)}<div class="fld2"><label class="fld"><span>효과 시작 (복용 후 분)</span><input name="fxon" type="number" inputmode="numeric" min="0" max="600" value="${it.fx?.on ?? ''}" placeholder="없음"></label><label class="fld"><span>지속 (시간)</span><input name="fxdur" type="number" inputmode="decimal" step="0.5" min="0" max="24" value="${it.fx?.dur ?? ''}" placeholder="없음"></label></div>
+    <p class="hint">약을 연결하면 효과 구간은 자동으로 계산돼요. 연결할 약이 없을 때만 직접 넣어요.</p></div>
     <p class="err" id="sheet-err" hidden></p>
     <div class="row-btns"><button class="btn pri" data-act="save">저장</button>${cur ? '<button class="btn danger" data-act="del">삭제</button>' : ''}</div>`;
   const refresh = () => {
@@ -782,6 +997,7 @@ function openItemSheet(id, preset) {
         unit: type === 'count' || ask === 'num' ? v('unit').trim() || undefined : undefined,
         goal: goal ? { total: Math.round(goal), from: cur?.goal?.from || todayKey() } : undefined,
         fx: fxdur ? { on: Math.round(parseFloat(v('fxon')) || 0), dur: fxdur } : undefined,
+        drugs: cat === 'med' ? readDrugLinks() : undefined,
       };
       if (!cur) item.since = todayKey();
       store.saveItem(item);
@@ -843,7 +1059,7 @@ function openSyncSheet() {
     <div class="row-btns"><button class="btn pri" data-act="connect">${l.gh ? '다시 연결' : '연결하기'}</button>${l.gh ? '<button class="btn" data-act="sync-now">지금 동기화</button><button class="btn danger" data-act="disconnect">연결 끊기</button>' : ''}</div>
     <details ${l.gh ? '' : 'open'}><summary>토큰 만드는 방법</summary><ol class="steps">
       <li><a href="${tokenUrl}" target="_blank" rel="noopener">GitHub 토큰 만들기 화면 열기</a></li>
-      <li>Repository access에서 Only select repositories를 고르고, 기록용 비공개 저장소 하나만 선택해요</li>
+      <li>Repository access에서 Only select repositories를 고르고, <b>${esc((l.gh?.repo || defaultRepo() || '/기록용 저장소').split('/')[1])}</b> 하나만 골라요 (이름이 비슷한 다른 저장소 말고)</li>
       <li>Permissions의 Contents가 Read and write인지 확인해요</li>
       <li>Generate token을 누르고, 나온 값을 복사해서 위 칸에 붙여 넣어요</li></ol></details>
     <p class="hint">토큰은 이 기기에만 저장돼요. 공개 저장소는 연결되지 않아요. 연결을 끊어도 기기의 기록은 남아요.</p>`;
@@ -1138,6 +1354,18 @@ const actions = {
     toast('기록을 취소했어요');
   },
   'lg-ok': () => hideLogged(),
+  'peak-mode'(arg) {
+    ui.peakMode = arg;
+    render();
+  },
+  'peak-rating'(arg) {
+    ui.peakRating = arg;
+    render();
+  },
+  'med-new'(id) {
+    const p = profileById(id);
+    if (p) openItemSheet(null, { name: p.name, icon: '💊', cat: 'med', type: 'check', block: p.block || 'am', essential: true, drugs: [{ id: p.id }] });
+  },
   tw: d => twSet(tw.t + d * MIN),
   'tw-set': ts => twSet(+ts),
   'time-wake': () => openTimeSheet('wake'),
@@ -1383,4 +1611,14 @@ lastExp = { key: todayKey(), exp: C.expOf(store.day(todayKey()), cfg()) };
 paint();
 if (local().focus) tickFocus();
 if (local().gh) sync.syncNow();
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+// 새 버전이 올라오면 알려준다 (앱을 켜 둔 채로 있어도)
+if ('serviceWorker' in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker
+    .register('sw.js')
+    .then(reg => document.addEventListener('visibilitychange', () => !document.hidden && reg.update().catch(() => {})))
+    .catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController) toast('새 버전이 준비됐어요', { label: '적용', fn: () => location.reload() });
+  });
+}

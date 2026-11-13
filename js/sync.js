@@ -5,6 +5,7 @@ import { CFG_PATH, pathOfDay } from './store.js';
 
 const API = 'https://api.github.com';
 export const KEEP_DAYS = 35;
+export const MEDS_PATH = 'meds.json'; // 약 정보 (앱은 읽기만 한다)
 
 export class SyncError extends Error {
   constructor(kind, message) {
@@ -63,7 +64,7 @@ export function createSync({ store, fetchFn, now = Date.now, online = () => true
 
   async function checkRepo() {
     const r = await req('GET', `/repos/${gh().repo}`);
-    if (r.status === 404) throw new SyncError('repo', '저장소를 찾을 수 없어요. 이름과 토큰의 저장소 접근 권한을 확인해 주세요');
+    if (r.status === 404) throw new SyncError('repo', '토큰이 이 저장소를 볼 수 없어요. 토큰을 만들 때 Repository access에서 "Only select repositories"로 이 저장소를 골랐는지 확인해 주세요');
     if (!r.ok) throw new SyncError('http', `GitHub 응답 오류 (${r.status})`);
     const j = await r.json();
     if (j.private !== true) throw new SyncError('public', '공개 저장소에는 기록을 올리지 않아요. 비공개 저장소를 연결해 주세요');
@@ -116,6 +117,19 @@ export function createSync({ store, fetchFn, now = Date.now, online = () => true
     store.setSha(CFG_PATH, j.sha);
     store.setEtag(CFG_PATH, r.headers.get('etag'));
   }
+  async function pullMeds() {
+    const r = await req('GET', contents(MEDS_PATH), { etag: store.etag(MEDS_PATH) });
+    if (r.status === 304) return;
+    if (r.status === 404) {
+      if (store.medsDoc()) store.setMeds(null);
+      store.setEtag(MEDS_PATH, null);
+      return;
+    }
+    if (!r.ok) throw new SyncError('http', `GitHub 응답 오류 (${r.status})`);
+    const doc = parse(await r.json());
+    if (doc && Array.isArray(doc.drugs)) store.setMeds(doc);
+    store.setEtag(MEDS_PATH, r.headers.get('etag'));
+  }
   // 연도 폴더 목록 한 번으로 바뀐 날짜만 골라 받는다
   async function pullDays() {
     const keys = lastDays(todayKey(), KEEP_DAYS);
@@ -160,6 +174,7 @@ export function createSync({ store, fetchFn, now = Date.now, online = () => true
       if (!repoOk) await checkRepo();
       if (pull) {
         await pullConfig();
+        await pullMeds();
         await pullDays();
       }
       for (const p of store.dirtyPaths()) await pushDoc(p, keepalive);

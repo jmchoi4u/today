@@ -27,8 +27,8 @@ function bands(day, items) {
   return out;
 }
 
-// 오늘 탭 맨 위의 한 줄짜리 띠
-export function stripSvg(day, cfg, now, isToday) {
+// 오늘 탭 맨 위의 한 줄짜리 띠 (extra: 약 정보로 계산한 효과 구간 [[시작, 끝]])
+export function stripSvg(day, cfg, now, isToday, extra = []) {
   const W = 328, L = 8, R = W - 8, Y = 38, TH = 12;
   const [t0, t1] = domain(day, now, isToday);
   const x = t => r1(L + ((Math.min(Math.max(t, t0), t1) - t0) / (t1 - t0)) * (R - L));
@@ -37,7 +37,7 @@ export function stripSvg(day, cfg, now, isToday) {
   let s = `<rect x="${L}" y="${Y}" width="${R - L}" height="${TH}" rx="6" class="st-track"/>`;
   const endX = isToday ? x(now) : R;
   if (endX - L > 1) s += `<rect x="${L}" y="${Y}" width="${r1(endX - L)}" height="${TH}" rx="6" class="st-fill"/>`;
-  for (const [a, b] of bands(day, items)) {
+  for (const [a, b] of [...bands(day, items), ...extra]) {
     if (b > t0 && a < t1) s += `<rect x="${x(a)}" y="${Y - 6}" width="${Math.max(3, r1(x(b) - x(a)))}" height="3.5" rx="1.75" class="st-fx"/>`;
   }
   if (wake) {
@@ -65,7 +65,7 @@ export function stripSvg(day, cfg, now, isToday) {
 }
 
 // 흐름 탭의 큰 그래프: 약·루틴 / 식사 / 음료 / 집중·운동 / 컨디션
-export function flowSvg(day, cfg, now, isToday) {
+export function flowSvg(day, cfg, now, isToday, extra = []) {
   const W = 340, L = 10, R = W - 10, H = 296;
   const LN = { rt: 34, meal: 80, drink: 126, act: 172, cond: 218 };
   const [t0, t1] = domain(day, now, isToday);
@@ -93,10 +93,10 @@ export function flowSvg(day, cfg, now, isToday) {
 
   const lane = (y, label) => `<text x="${L}" y="${y - 5}" class="fl-lb">${label}</text><line x1="${L}" x2="${R}" y1="${y + 28}" y2="${y + 28}" class="fl-base"/>`;
   s += lane(LN.rt, '약·루틴') + lane(LN.meal, '식사') + lane(LN.drink, '물·음료') + lane(LN.act, '집중·운동');
-  s += `<text x="${L}" y="${LN.cond - 5}" class="fl-lb">컨디션 <tspan class="fl-en-t" dx="6">● 에너지</tspan> <tspan class="fl-mo-t" dx="4">● 기분</tspan></text>`;
+  s += `<text x="${L}" y="${LN.cond - 5}" class="fl-lb">컨디션 <tspan class="fl-en-t" dx="6">● 에너지</tspan> <tspan class="fl-mo-t" dx="4">● 기분</tspan> <tspan class="fl-at-t" dx="4">● 집중도</tspan></text>`;
   for (const v of [1, 3, 5]) s += `<line x1="${L}" x2="${R}" y1="${LN.cond + 46 - ((v - 1) / 4) * 40}" y2="${LN.cond + 46 - ((v - 1) / 4) * 40}" class="fl-base"/>`;
 
-  for (const [a, b] of bands(day, items)) {
+  for (const [a, b] of [...bands(day, items), ...extra]) {
     if (b > t0 && a < t1) s += `<rect x="${x(a)}" y="${LN.rt + 2}" width="${Math.max(3, r1(x(b) - x(a)))}" height="24" rx="6" class="fl-fx"/>`;
   }
 
@@ -125,7 +125,7 @@ export function flowSvg(day, cfg, now, isToday) {
   if (sleep) s += mark('rt', sleep, '🌙', 15);
 
   const cy = v => r1(LN.cond + 46 - ((v - 1) / 4) * 40);
-  for (const [id, cls] of [['energy', 'fl-en'], ['mood', 'fl-mo']]) {
+  for (const [id, cls] of [['energy', 'fl-en'], ['mood', 'fl-mo'], ['attn', 'fl-at']]) {
     const pts = evs.filter(e => e.item === id && e.v);
     if (pts.length > 1) s += `<polyline points="${pts.map(e => `${x(e.t)},${cy(e.v)}`).join(' ')}" class="${cls}"/>`;
     for (const e of pts) s += `<circle cx="${x(e.t)}" cy="${cy(e.v)}" r="3.6" class="${cls} pt"/>`;
@@ -136,4 +136,90 @@ export function flowSvg(day, cfg, now, isToday) {
     s += `<line x1="${nx}" x2="${nx}" y1="20" y2="${H - 22}" class="fl-now"/><path d="M${nx - 4.5} 15h9l-4.5 6z" class="fl-nowm"/>`;
   }
   return `<svg viewBox="0 0 ${W} ${H}" class="flow-svg" role="img" aria-label="시간대별 약, 식사, 음료, 집중과 운동, 컨디션 기록">${s}</svg>`;
+}
+
+// ---------- 약 탭 ----------
+
+const hourTicks = (t0, t1, x, y0, y1, yLabel) => {
+  let s = '';
+  const span = (t1 - t0) / HOUR, step = span > 15 ? 3 : span > 8 ? 2 : 1;
+  const h0 = new Date(t0);
+  h0.setMinutes(0, 0, 0);
+  for (let t = h0.getTime(); t <= t1; t += HOUR) {
+    const hr = new Date(t).getHours();
+    if (t < t0 || hr % step) continue;
+    s += `<line x1="${x(t)}" x2="${x(t)}" y1="${y0}" y2="${y1}" class="fl-grid"/><text x="${x(t)}" y="${yLabel}" class="fl-ax">${hr}시</text>`;
+  }
+  return s;
+};
+
+// 오늘 약 효과: 같은 성분끼리 더한 곡선(굵게), 복용마다의 곡선(점선), 효과·최고 구간 띠, 복용 시각, 집중도 기록, 지금, 평소 잠드는 시각
+export function medSvg(m) {
+  const W = 340, L = 12, R = W - 12, TOP = 34, BOT = 172;
+  const H = BOT + 40 + m.steady.length * 24;
+  const { t0, t1 } = m;
+  const x = t => r1(L + ((Math.min(Math.max(t, t0), t1) - t0) / (t1 - t0)) * (R - L));
+  const y = rel => r1(BOT - Math.max(0, Math.min(1.05, rel)) * (BOT - TOP));
+  let s = hourTicks(t0, t1, x, TOP - 6, BOT + 18, BOT + 30);
+  const G0 = m.groups[0];
+  if (G0) {
+    for (const [v, t] of [[G0.effRel, '효과 기준'], [0.8, '최고 80%']]) s += `<line x1="${L}" x2="${R}" y1="${y(v)}" y2="${y(v)}" class="med-th"/><text x="${R}" y="${y(v) - 3}" class="med-th-t">${t}</text>`;
+  }
+  m.groups.forEach((G, gi) => {
+    const pts = m.ts.map((t, i) => `${x(t)},${y(G.total[i] / G.max)}`);
+    s += `<path d="M${x(m.ts[0])},${BOT} L${pts.join(' L')} L${x(m.ts[m.ts.length - 1])},${BOT} Z" class="med-area g${gi}"/>`;
+    if (G.parts.length > 1) for (const P of G.parts) s += `<polyline points="${m.ts.map((t, i) => `${x(t)},${y(P.ys[i] / G.max)}`).join(' ')}" class="med-part g${gi}"/>`;
+    s += `<polyline points="${pts.join(' ')}" class="med-line g${gi}"/>`;
+    for (const [a, b] of G.effect) s += `<rect x="${x(a)}" y="${BOT + 5}" width="${Math.max(2, r1(x(b) - x(a)))}" height="5" rx="2.5" class="med-eff g${gi}"/>`;
+    for (const [a, b] of G.peak) s += `<rect x="${x(a)}" y="${BOT + 4}" width="${Math.max(2, r1(x(b) - x(a)))}" height="7" rx="3.5" class="med-peak g${gi}"/>`;
+  });
+  // 복용 시각 (겹치면 아래 줄로)
+  let lastX = -99, row = 0;
+  for (const d of m.doses) {
+    const dx = x(d.t);
+    row = dx - lastX < 58 ? 1 - row : 0;
+    lastX = dx;
+    s += `<line x1="${dx}" x2="${dx}" y1="${TOP - 6 + row * 12}" y2="${BOT}" class="med-dose"/><text x="${Math.min(Math.max(dx, L + 24), R - 24)}" y="${TOP - 10 + row * 12}" class="med-dose-t">${esc(d.label)}</text>`;
+  }
+  // 기록한 집중도 (1~5를 같은 높이 축에)
+  const rp = (m.ratings || []).filter(r => r.t >= t0 && r.t <= t1);
+  if (rp.length > 1) s += `<polyline points="${rp.map(r => `${x(r.t)},${y((r.v - 1) / 4)}`).join(' ')}" class="med-rate-l"/>`;
+  for (const r of rp) s += `<circle cx="${x(r.t)}" cy="${y((r.v - 1) / 4)}" r="4" class="med-rate"/>`;
+  if (m.sleepAt && m.sleepAt > t0 && m.sleepAt < t1) {
+    const sx = x(m.sleepAt);
+    s += `<line x1="${sx}" x2="${sx}" y1="${TOP - 4}" y2="${BOT + 12}" class="med-sleep"/><text x="${Math.min(sx, R - 30)}" y="${BOT + 22}" class="med-sleep-t">🌙 평소 잠</text>`;
+  }
+  if (m.isToday && m.now > t0 && m.now < t1) {
+    const nx = x(m.now);
+    s += `<line x1="${nx}" x2="${nx}" y1="${TOP - 2}" y2="${BOT + 12}" class="fl-now"/><path d="M${nx - 4.5} ${TOP - 7}h9l-4.5 6z" class="fl-nowm"/>`;
+  }
+  // 오래 쌓이는 약: 하루 안에서는 거의 평평한 띠
+  m.steady.forEach((st, i) => {
+    const yy = BOT + 38 + i * 24;
+    s += `<rect x="${L}" y="${yy}" width="${R - L}" height="18" rx="9" class="med-steady"/><text x="${L + 10}" y="${yy + 13}" class="med-steady-t">${esc(st.text)}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" class="flow-svg" role="img" aria-label="오늘 약 효과 곡선">${s}</svg>`;
+}
+
+// 내 데이터로 본 피크: 칸마다 평균 집중도(1~5) 막대, 기록 수, 가장 높은 구간 강조
+export function peakSvg(st, best, { unit = 'h', label = i => `${i}${unit}` } = {}) {
+  const n = st.avg.length, W = 340, L = 10, R = W - 10, TOP = 22, BOT = 118, H = 140;
+  const bw = (R - L) / n;
+  let s = '';
+  for (const v of [1, 3, 5]) {
+    const yy = r1(BOT - (v / 5) * (BOT - TOP));
+    s += `<line x1="${L}" x2="${R}" y1="${yy}" y2="${yy}" class="fl-base"/>`;
+  }
+  for (let i = 0; i < n; i++) {
+    const bx = r1(L + i * bw + 1.5), w = r1(bw - 3);
+    const inBest = best && i >= best.from && i < best.to;
+    if (st.avg[i] == null) s += `<rect x="${bx}" y="${BOT - 6}" width="${w}" height="6" rx="2" class="pk-empty"/>`;
+    else {
+      const hgt = r1((st.avg[i] / 5) * (BOT - TOP));
+      s += `<rect x="${bx}" y="${r1(BOT - hgt)}" width="${w}" height="${hgt}" rx="3" class="${inBest ? 'pk-best' : 'pk-bar'}"/>`;
+      s += `<text x="${r1(bx + w / 2)}" y="${r1(BOT - hgt - 4)}" class="pk-n">${st.n[i]}</text>`;
+    }
+    if (i % (n > 16 ? 3 : 2) === 0) s += `<text x="${r1(bx + w / 2)}" y="${BOT + 16}" class="fl-ax">${label(i)}</text>`;
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" class="flow-svg" role="img" aria-label="시간대별 평균 집중도">${s}</svg>`;
 }

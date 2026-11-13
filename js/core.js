@@ -17,8 +17,10 @@ export const CATS = { med: '약·영양제', habit: '습관', meal: '식사', dr
 export const SPECIAL = {
   energy: { name: '에너지', icon: '⚡' },
   mood: { name: '기분', icon: '🙂' },
+  attn: { name: '집중도', icon: '🧠' },
   focus: { name: '집중', icon: '🎯' },
 };
+export const RATINGS = ['energy', 'mood', 'attn'];
 
 export function defaultConfig(m = 0) {
   const items = [
@@ -350,6 +352,12 @@ export function guessTime(item, day, { key, rollover = 4 } = {}) {
   return dayStartTs(key, rollover) + ((((m - rollover * 60) % 1440) + 1440) % 1440) * MIN;
 }
 
+// 평소 잠드는 시각: 논리적 하루 시작(rollover시)부터 몇 분 뒤인지. 표본이 3일 미만이면 null.
+export function typicalSleep(days, rollover = 4) {
+  const xs = days.filter(d => sleepOf(d)).map(d => relMin(sleepOf(d), rollover)).sort((a, b) => a - b);
+  return xs.length >= 3 ? xs[Math.floor(xs.length / 2)] : null;
+}
+
 // 평소 기상 시각(자정부터 분). 표본이 3일 미만이면 null.
 export function typicalWake(days) {
   const xs = days.filter(d => wakeOf(d)).map(d => minutesOfDay(wakeOf(d))).sort((a, b) => a - b);
@@ -422,7 +430,7 @@ export function expOf(day, cfg) {
   const evs = live(day);
   const focusMin = evs.filter(e => e.item === 'focus').reduce((a, e) => a + (e.min || 0), 0);
   total += Math.min(60, Math.round(focusMin / 2.5));
-  total += 3 * Math.min(4, evs.filter(e => e.item === 'energy' || e.item === 'mood').length);
+  total += 3 * Math.min(4, evs.filter(e => RATINGS.includes(e.item)).length);
   total += 20 * top3Of(day).filter(t => t.done).length;
   if (reviewOf(day)) total += 20;
   return total;
@@ -501,7 +509,7 @@ export function dayReport(day, cfg) {
 // ---------- 코치 ----------
 // 지금 상태를 보고 제안을 우선순위 순으로 돌려준다. 맨 앞 하나가 화면에 나온다.
 
-export function coach({ now, day, cfg, local = {}, typical = null, chain = null }) {
+export function coach({ now, day, cfg, local = {}, typical = null, chain = null, windows = [] }) {
   const wake = wakeOf(day);
   if (!wake) {
     return [{ pri: 0, key: 'start', icon: '☀️', tone: 'now', title: '하루를 시작해 볼까요?', sub: '일어난 시간만 알려주면 오늘 흐름을 거기에 맞출게요' }];
@@ -603,6 +611,13 @@ export function coach({ now, day, cfg, local = {}, typical = null, chain = null 
       fxEnd = b;
     }
   }
+  // 약 정보로 계산한 효과 구간 (앱이 넘겨준다)
+  for (const w of windows || []) {
+    if (now >= w.start && now < w.end && w.end > fxEnd) {
+      fxItem = { id: 'med:' + w.name, name: w.name };
+      fxEnd = w.end;
+    }
+  }
 
   // 5) 오늘의 핵심 3가지
   const t3 = top3Of(day), open = t3.filter(t => !t.done);
@@ -624,7 +639,7 @@ export function coach({ now, day, cfg, local = {}, typical = null, chain = null 
   }
 
   // 6) 컨디션
-  const conds = evs.filter(e => e.item === 'energy' || e.item === 'mood');
+  const conds = evs.filter(e => RATINGS.includes(e.item));
   const lastCond = conds.length ? conds[conds.length - 1].t : 0;
   if (hrs >= 1 && now - (lastCond || wake) >= 4 * HOUR) {
     push(36, { key: 'cond', icon: '🙂', tone: 'calm', title: '지금 컨디션은 어때요?', sub: '에너지와 기분을 한 번씩만 눌러 주세요', action: { label: '기록하기', act: 'go-cond' } });
