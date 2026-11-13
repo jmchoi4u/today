@@ -711,9 +711,12 @@ export function coach({ now, day, cfg, local = {}, typical = null, chain = null,
       fxEnd = b;
     }
   }
-  // 약 정보로 계산한 효과 구간 (앱이 넘겨준다)
+  // 약 정보로 계산한 효과 구간과 가장 높은 구간 (앱이 넘겨준다)
+  let peakEnd = 0;
   for (const w of windows || []) {
-    if (now >= w.start && now < w.end && w.end > fxEnd) {
+    if (now < w.start || now >= w.end) continue;
+    if (w.peak) peakEnd = Math.max(peakEnd, w.end);
+    else if (w.end > fxEnd) {
       fxItem = { id: 'med:' + w.name, name: w.name };
       fxEnd = w.end;
     }
@@ -724,16 +727,36 @@ export function coach({ now, day, cfg, local = {}, typical = null, chain = null,
   if (!t3.length && hrs < 8 && !lite) {
     push(28, { key: 't3:set', icon: '🎯', title: '오늘 가장 중요한 일을 정해요', sub: '3가지만 정해도 하루가 선명해져요', action: { label: '정하기', act: 't3-edit', arg: 't1' } });
   }
+  // 외부 마감: 핵심 일에 건 마감 시각 (30분 전, 지난 뒤)
+  for (const t of open) {
+    if (!t.due) continue;
+    const left = t.due - now;
+    if (left > 0 && left <= 30 * MIN) {
+      push(15, { key: 't3:due:' + t.id, icon: '⏰', title: `마감 ${fmtDur(left / MIN)} 전 · ${t.text}`, sub: t.to ? `${t.to}에게 보고하기로 했어요. 끝냈으면 체크해요` : '끝냈으면 체크하고, 아니면 25분만 더 가요', action: { label: '끝냈어요', act: 't3-done', arg: t.id }, alt: { label: '25분 집중', act: 'focus', arg: '25:' + t.id } });
+    } else if (left <= 0) {
+      push(13, { key: 't3:late:' + t.id, icon: '⏰', title: `마감 지났어요 · ${t.text}`, sub: `${fmtTime(t.due)} 마감이었어요. 끝냈으면 체크하고, 못 끝냈으면 범위를 반으로 줄여 새 마감을 잡아요`, action: { label: '끝냈어요', act: 't3-done', arg: t.id }, alt: { label: '마감 다시 잡기', act: 't3-edit', arg: t.id } });
+    }
+  }
   if (open.length && !local.focus && cur !== 'night') {
-    const t = open[0];
-    push(fxItem ? 22 : 34, {
-      key: 't3:go:' + t.id,
-      icon: '🎯',
-      title: `핵심: ${t.text}`,
-      sub: fxItem ? `${fxItem.name} 효과 구간이에요 (${fmtTime(fxEnd)}까지). 25분만 시작해요` : '25분만 먼저 시작해 볼까요?',
-      action: { label: '25분 집중', act: 'focus', arg: '25:' + t.id },
-      alt: { label: '이미 끝냈어요', act: 't3-done', arg: t.id },
-    });
+    // 마감이 가까운 일부터
+    const t = open.slice().sort((a, b) => (a.due || Infinity) - (b.due || Infinity))[0];
+    const due = t.due ? ` · ${fmtTime(t.due)} 마감` : '';
+    if (peakEnd) {
+      push(18, { key: 't3:go:' + t.id, icon: '🎯', title: `지금 집중 최고 구간 · ${t.text}`, sub: `약 효과가 가장 높은 구간이에요 (${fmtTime(peakEnd)}까지${due}). 50분 가요`, action: { label: '50분 집중', act: 'focus', arg: '50:' + t.id }, alt: { label: '25분만', act: 'focus', arg: '25:' + t.id } });
+    } else {
+      push(fxItem ? 22 : 34, {
+        key: 't3:go:' + t.id,
+        icon: '🎯',
+        title: `핵심: ${t.text}`,
+        sub: fxItem ? `${fxItem.name} 효과 구간이에요 (${fmtTime(fxEnd)}까지${due}). 25분만 시작해요` : `25분만 먼저 시작해 볼까요?${due}`,
+        action: { label: '25분 집중', act: 'focus', arg: '25:' + t.id },
+        alt: { label: '이미 끝냈어요', act: 't3-done', arg: t.id },
+      });
+    }
+    // 시작이 안 되는 날: 일어나고 2시간이 지나도 집중을 한 번도 안 했으면 2분짜리 시작
+    if (hrs >= 2 && !evs.some(e => e.item === 'focus')) {
+      push(26, { key: 'start2', icon: '🪫', tone: 'calm', title: '시작이 안 되면 2분만', sub: `"${t.text}" 파일만 열고 첫 줄. 2분 뒤에 멈춰도 돼요`, action: { label: '2분 시작', act: 'focus', arg: '2:' + t.id }, alt: { label: '25분 집중', act: 'focus', arg: '25:' + t.id } });
+    }
   } else if (fxItem && !local.focus) {
     push(27, { key: 'fx:' + fxItem.id, icon: '⚡', title: '집중하기 좋은 구간이에요', sub: `${fxItem.name} 효과 구간 · ${fmtTime(fxEnd)}까지`, action: { label: '25분 집중', act: 'focus', arg: '25' } });
   }

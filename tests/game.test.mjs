@@ -84,6 +84,72 @@ test('스탯: 최근 N일 중 제시간에 한 날 (예정 ±30분)', () => {
   assert.equal(GM.metricValue({ type: 'item_days', item: 'lights', days: 14 }, ctx), 3);
 });
 
+test('메인 퀘스트: 수동 과제는 기록 이벤트로, 자동 과제는 지표로, 단계 상태와 보너스', () => {
+  const now = clock(at(9, 0, 20));
+  const store = createStore({ storage: new MemoryStorage(), now });
+  store.saveItem({ id: 'pain_note', name: '불편 한 줄', icon: '📝', cat: 'habit', type: 'log', ask: 'note', block: 'any' });
+  for (let i = 0; i < 3; i++) store.logEvent('2026-11-20', 'pain_note', { t: at(10, i, 20), note: '문의 놓침' });
+  store.logEvent('2026-11-20', 'q:a2');
+  store.logEvent('2026-11-20', 'report5', { t: at(18, 0, 20), did: '숫자 셋 받음' });
+  store.logEvent('2026-11-21', 'report5', { t: at(18, 0, 21), did: '데모 준비' });
+  const quest = {
+    stages: [
+      { id: 's1', name: '재기', from: '2026-11-14', to: '2026-12-27', tasks: [{ id: 'a1', text: '불편 3줄', auto: { type: 'item_total', item: 'pain_note', at: 3 } }, { id: 'a2', text: '숫자 받기' }] },
+      { id: 's2', name: '파기', from: '2027-01-04', to: '2027-02-26', tasks: [{ id: 'b1', text: '보고 2번', auto: { type: 'reports', at: 2 } }, { id: 'b2', text: '데모' }] },
+    ],
+  };
+  const days = ['2026-11-20', '2026-11-21'].map(k => store.day(k));
+  const Q = GM.questState(quest, { cfg: store.config(), days, todayKey: '2026-11-21' });
+  assert.deepEqual(Q.stages.map(s => [s.status, s.ok]), [['done', 2], ['later', 1]]);
+  assert.equal(Q.current.id, 's2');
+  assert.equal(Q.bonus, 3 * GM.QUEST_BONUS);
+  assert.equal(Q.stages[0].tasks[1].evKey, '2026-11-20');
+  assert.deepEqual(GM.reportsOf(days).map(r => r.did), ['숫자 셋 받음', '데모 준비'], '시간 순');
+  assert.equal(GM.reportsOf(days, '2026-11-21').length, 1, '시작일 전 보고는 세지 않는다');
+  assert.equal(GM.questState({ stages: [] }, { days }), null);
+});
+
+test('아침 루틴: 기록에서 단계를 확인한다', () => {
+  const now = clock(at(9, 0));
+  const store = createStore({ storage: new MemoryStorage(), now });
+  const key = '2026-11-12';
+  let st = GM.routineState(GM.DEFAULT_ROUTINE, store.day(key));
+  assert.equal(st.filter(s => s.done).length, 0);
+  store.setWake(key, at(8, 30));
+  store.logEvent(key, 'water');
+  store.logEvent(key, 'rt:light');
+  store.setTop3(key, 't1', { text: '코테 1문제' });
+  assert.equal(GM.routineState(GM.DEFAULT_ROUTINE, store.day(key)).find(s => s.id === 'top3').done, false, '마감 시각까지 정해야 끝');
+  store.setTop3(key, 't1', { text: '코테 1문제', due: at(12) });
+  st = GM.routineState(GM.DEFAULT_ROUTINE, store.day(key));
+  assert.deepEqual(st.filter(s => s.done).map(s => s.id), ['wake', 'water', 'light', 'top3']);
+  assert.equal(GM.routineState(GM.DEFAULT_ROUTINE, store.day(key), { focusOn: true }).find(s => s.id === 'focus').done, true);
+});
+
+test('코치: 외부 마감 30분 전과 지난 뒤, 최고 구간엔 50분, 시작이 안 되면 2분', () => {
+  const now = clock(at(8));
+  const store = createStore({ storage: new MemoryStorage(), now });
+  const key = '2026-11-12';
+  store.setWake(key, at(8));
+  store.logEvent(key, 'med_am');
+  store.logEvent(key, 'meal');
+  store.setSkip(key, 'stretch', true);
+  store.setTop3(key, 't1', { text: '코테 2문제', due: at(12), to: '형' });
+  const coach = (extra = {}) => C.coach({ now: now(), day: store.day(key), cfg: store.config(), local: store.local(), ...extra });
+  now.set(at(11, 40));
+  let s = coach().find(x => x.key === 't3:due:t1');
+  assert.match(s.title, /마감 20분 전/);
+  assert.match(s.sub, /형에게 보고/);
+  now.set(at(12, 10));
+  s = coach().find(x => x.key === 't3:late:t1');
+  assert.equal(s.alt.act, 't3-edit');
+  assert.ok(coach().some(x => x.key === 'start2'), '2시간 넘게 집중을 안 했으면 2분 시작');
+  const peak = coach({ windows: [{ start: at(11), end: at(14), name: '약' }, { start: at(12), end: at(13), name: '약', peak: true }] }).find(x => x.key === 't3:go:t1');
+  assert.equal(peak.action.arg, '50:t1');
+  store.logEvent(key, 'focus', { min: 25 });
+  assert.ok(!coach().some(x => x.key === 'start2'));
+});
+
 test('날씨: 코드 풀이와 해 시각, 위치는 소수 첫째 자리까지만 보낸다', async () => {
   assert.equal(WX.describe(0).text, '맑음');
   assert.equal(WX.describe(63).icon, '🌧️');

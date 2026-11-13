@@ -7,7 +7,7 @@ import * as PK from './pk.js';
 import * as GM from './game.js';
 import * as WX from './weather.js';
 
-const VERSION = '1.3';
+const VERSION = '1.4';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -41,7 +41,17 @@ const EMOJIS = ['💊', '🟡', '💧', '☕', '🍚', '🥗', '🏃', '🏋️'
 const WEEKDAY = '일월화수목금토';
 
 const itemById = id => cfg().items.find(i => i.id === id);
-const nameOf = id => itemById(id) || C.SPECIAL[id] || { name: '삭제된 항목', icon: '▫️' };
+const nameOf = id => {
+  const it = itemById(id) || C.SPECIAL[id];
+  if (it) return it;
+  if (id === 'report5') return { name: '금요일 5줄 보고', icon: '📮' };
+  if (id?.startsWith('q:')) {
+    const t = store.game()?.quest?.stages?.flatMap(s => s.tasks || []).find(x => x.id === id.slice(2));
+    return { name: t ? `퀘스트 · ${t.text}` : '퀘스트', icon: '🗺️' };
+  }
+  if (id?.startsWith('rt:')) return { name: '아침 루틴', icon: '🌅' };
+  return { name: '삭제된 항목', icon: '▫️' };
+};
 const season = () => C.seasonInfo(todayKey(), cfg().prefs?.seasonStart);
 const clampT = (t, [lo, hi]) => Math.min(hi, Math.max(lo, t));
 // 그날 기록할 수 있는 시각: 논리적 하루의 시작부터, 오늘이면 지금까지
@@ -291,7 +301,8 @@ function gameCtx() {
   const ledger = GM.expLedger(firstKey(), tk, getDay, cfg());
   const def = store.game();
   const stats = def ? GM.statsNow(def, { cfg: cfg(), days: allDays(), todayKey: tk, rollover: rollover() }) : [];
-  const sBonus = GM.statBonus(stats);
+  const quest = def?.quest ? GM.questState(def.quest, { cfg: cfg(), days: allDays(), todayKey: tk, rollover: rollover() }) : null;
+  const sBonus = GM.statBonus(stats) + (quest?.bonus || 0);
   const total = ledger.reduce((a, r) => a + r.exp + r.bonus, 0) + sBonus;
   const L = GM.levelOf(total);
   // 레벨 기록: 누적이 문턱을 넘은 날 (스탯 보너스는 오늘에 더한다)
@@ -306,7 +317,7 @@ function gameCtx() {
     }
   });
   const today = ledger.find(r => r.key === tk) || { exp: 0, bonus: 0, why: [] };
-  const v = { ledger, def, stats, sBonus, total, L, tier: GM.tierOf(L.lv), ups, today };
+  const v = { ledger, def, stats, quest, sBonus, total, L, tier: GM.tierOf(L.lv), ups, today };
   gameMemo = { k, v };
   return v;
 }
@@ -366,7 +377,7 @@ function coachList(day) {
   const tk = todayKey();
   const hist = C.lastDays(C.addDays(tk, -1), 14).map(getDay);
   const mc = medCtx(tk);
-  const windows = (mc?.groups || []).flatMap(G => G.effect.map(([a, b]) => ({ start: a, end: b, name: G.name })));
+  const windows = (mc?.groups || []).flatMap(G => [...G.effect.map(([a, b]) => ({ start: a, end: b, name: G.name })), ...G.peak.map(([a, b]) => ({ start: a, end: b, name: G.name, peak: true }))]);
   const list = C.coach({ now: now(), day, cfg: cfg(), local: local(), typical: C.typicalWake(hist), chain: chainNow(), windows });
   if (list[0].key === 'start' || list[0].key === 'closed') return list;
   const l = local(), sn = k => (l.snooze?.[k] || 0) > now();
@@ -412,6 +423,19 @@ function coachList(day) {
   const se = season();
   if (se.left === 0 && !sn('season')) extra.push({ pri: 38, key: 'season', icon: '🏁', tone: 'now', title: `시즌 ${se.n} 마지막 날이에요`, sub: '2주 결과를 확인하고 보고해요', action: { label: '결과 보기', act: 'tab', arg: 'week' } });
   if (!l.seen.setup && !sn('setup')) extra.push({ pri: 50, key: 'setup', icon: '🛠️', tone: 'calm', title: '기본 항목을 내 루틴으로 바꿔요', sub: '약 이름, 시간대, 필수 여부를 설정에서 고칠 수 있어요', action: { label: '설정 열기', act: 'tab', arg: 'set' }, alt: { label: '괜찮아요', act: 'seen', arg: 'setup' } });
+  // 금요일 5줄: 금요일 저녁(17시 이후)에 이번 주 보고가 없으면
+  const nowD = new Date(now());
+  if (nowD.getDay() === 5 && nowD.getHours() >= 17 && !GM.reportsOf(C.lastDays(tk, 3).map(getDay)).length && !sn('report5')) {
+    const to = reportCfg().to;
+    extra.push({ pri: 20, key: 'report5', icon: '📮', title: '금요일 5줄 보내는 날', sub: `${to ? `${to}에게 ` : ''}이번 주 한 것·숫자·막힌 것·다음 주·부탁. 기록은 미리 채워 둘게요`, action: { label: '쓰기', act: 'report5' } });
+  }
+  // 매일 모으는 한 줄 (예: 사장님 불편): 정한 시각이 지났는데 오늘 아직 없으면
+  for (const dly of store.game()?.daily || []) {
+    const it = itemById(dly.item);
+    if (!it || C.itemState(day, it).count || sn('daily:' + it.id)) continue;
+    if (dly.after && C.fmtTime(now()) < dly.after) continue;
+    extra.push({ pri: 31, key: 'daily:' + it.id, icon: it.icon, tone: 'calm', title: dly.text || `${it.name} 남겨요`, sub: dly.sub || '', action: { label: '쓰기', act: 'tile', arg: it.id } });
+  }
   // 아침 햇빛: 일어나고 3시간 안, 해가 떠 있고, 비·눈이 아닐 때 (아침 빛은 밤에 졸음이 오는 시각을 앞당긴다)
   const W = wx(), sun = W.on && W.data ? WX.sunOf(W.data, tk) : null, t = now(), wk = C.wakeOf(day);
   if (sun && wk && t - wk < 3 * HOUR && t > sun.rise && t < sun.set - HOUR && !WX.isWet(W.data) && !sn('sun')) {
@@ -443,7 +467,18 @@ function top3Html(day) {
   const map = new Map((day.top3 || []).filter(t => !t.del && t.text).map(t => [t.id, t]));
   // 정한 것만 줄로 보여주고, 빈 칸은 "추가" 한 줄로 접는다 (첫 화면에 타일이 보이도록)
   const set = [...map.values()];
-  const rows = set.map(t => `<div class="t3 ${t.done ? 'done' : ''}"><button class="t3-main" data-act="t3-toggle" data-arg="${t.id}" aria-pressed="${!!t.done}"><span class="box">${IC.check}</span><span class="t3-t">${esc(t.text)}</span></button><button class="icon-btn" data-act="t3-edit" data-arg="${t.id}" aria-label="수정">${IC.edit}</button></div>`);
+  // 마감이 있으면 남은 시간을, 끝냈으면 마감 안에 끝냈는지를 보여준다
+  const dueTxt = t => {
+    if (!t.due) return '';
+    if (t.done) return t.done <= t.due ? `⏰ ${C.fmtTime(t.due)} 마감 안에 끝` : `⏰ ${C.fmtTime(t.due)} 마감 · ${C.fmtDur((t.done - t.due) / MIN)} 넘김`;
+    const left = t.due - now();
+    return left > 0 ? `⏰ ${C.fmtTime(t.due)}까지 · ${C.fmtDur(left / MIN)} 남음` : `⏰ ${C.fmtTime(t.due)} 마감 지남`;
+  };
+  const rows = set.map(t => {
+    const d = dueTxt(t), late = t.due && !t.done && t.due < now();
+    const report = t.done && t.to ? `<button class="icon-btn" data-act="t3-report" data-arg="${t.id}" aria-label="${esc(t.to)}에게 보고">📨</button>` : '';
+    return `<div class="t3 ${t.done ? 'done' : ''} ${late ? 'late' : ''}"><button class="t3-main" data-act="t3-toggle" data-arg="${t.id}" aria-pressed="${!!t.done}"><span class="box">${IC.check}</span><span class="t3-t">${esc(t.text)}${d ? `<small>${esc(d)}${t.to ? ` · ${esc(t.to)}에게 보고` : ''}</small>` : ''}</span></button>${report}<button class="icon-btn" data-act="t3-edit" data-arg="${t.id}" aria-label="수정">${IC.edit}</button></div>`;
+  });
   const free = ['t1', 't2', 't3'].find(id => !map.has(id));
   if (free) rows.push(`<button class="t3 empty" data-act="t3-edit" data-arg="${free}"><span class="t3-n">${set.length + 1}</span><span class="t3-t">${set.length ? '하나 더 추가' : '오늘 꼭 끝낼 일 정하기'}</span><span class="t3-plus">${IC.plus}</span></button>`);
   return win('오늘의 핵심 3가지', 'TOP 3', rows.join(''), '', set.length ? `<span class="win-count">${set.filter(t => t.done).length}/${set.length}</span>` : '');
@@ -549,6 +584,7 @@ function todayHtml() {
   if (today) h += ddayHtml();
   h += today && !C.wakeOf(day) ? startHtml() : stripHtml(day, today);
   if (today) h += retroHtml();
+  if (today && C.wakeOf(day)) h += routineHtml(day);
   if (today && C.wakeOf(day)) h += coachHtml(day);
   h += top3Html(day);
   h += tilesHtml(day, C.activeItems(cfg(), key), today);
@@ -584,6 +620,132 @@ function seasonDays() {
   const se = season(), tk = todayKey(), keys = [];
   for (let k = se.start; k <= tk && k <= se.end; k = C.addDays(k, 1)) keys.push(k);
   return { se, stats: C.seasonStats(keys.map(getDay), cfg()) };
+}
+
+// ---------- 아침 루틴 (일어나고 4시간 동안, 다 하면 사라진다) ----------
+function routineHtml(day) {
+  const w = C.wakeOf(day), t = now();
+  if (!w || t - w > 4 * HOUR || local().seen['rt:' + day.date]) return '';
+  const def = store.game();
+  const steps = GM.routineState(def?.routine || GM.DEFAULT_ROUTINE, day, { focusOn: !!local().focus });
+  const n = steps.filter(s => s.done).length;
+  if (n === steps.length) return '';
+  const next = steps.find(s => !s.done);
+  const open = C.top3Of(day).find(x => !x.done);
+  // 첫 집중은 각성 계열 약 효과가 올라오는 때에 맞춘다
+  const mc = medCtx(day.date);
+  const stim = mc?.today.find(d => d.p.kind === 'curve' && d.p.stim);
+  const onset = stim ? stim.t + PK.shape(stim.p).onset * HOUR : null;
+  const rows = steps.map(s => {
+    const pri = s === next ? 'pri' : '';
+    let btn = '';
+    if (!s.done) {
+      if (s.check === 'wake') btn = '<button class="btn sm" data-act="time-wake">기록</button>';
+      else if (s.check === 'item') {
+        const it = itemById(s.item);
+        if (it) btn = `<button class="btn sm ${pri}" data-act="tile" data-arg="${esc(it.id)}">${it.type === 'count' ? '+1' : it.cat === 'med' ? '먹었어요' : '했어요'}</button>`;
+      } else if (s.check === 'top3') btn = `<button class="btn sm ${pri}" data-act="t3-edit" data-arg="${esc(open?.id || 't1')}">${open ? '마감 정하기' : '정하기'}</button>`;
+      else if (s.check === 'focus') btn = `<button class="btn sm ${pri}" data-act="focus" data-arg="25${open ? ':' + open.id : ''}">시작</button>`;
+      else btn = `<button class="btn sm ${pri}" data-act="rt-done" data-arg="${esc(s.id)}">했어요</button>`;
+    }
+    let hint = s.hint || '';
+    if (s.check === 'focus' && !s.done && onset) hint = onset > t ? `약 효과가 ${C.fmtTime(onset)}쯤 올라와요. 그때 시작하면 좋아요` : '약 효과가 올라온 시간이에요. 지금이 좋아요';
+    if (s.check === 'top3' && !s.done && open) hint = `"${open.text}" 마감 시각만 정하면 돼요. 정한 시각이 오늘의 외부 마감이에요`;
+    return `<div class="rt-row ${s.done ? 'done' : ''} ${s === next ? 'next' : ''}"><span class="box">${IC.check}</span><span class="rt-t">${esc(s.text)}${hint ? `<small>${esc(hint)}</small>` : ''}</span>${btn}</div>`;
+  }).join('');
+  // 오늘 집중 시간표 (예정된 약까지 넣어서). 평소 잠드는 시각 30분 전에서 끊는다
+  const cut = mc?.sleepAt ? mc.sleepAt - 30 * MIN : null;
+  let clipped = false;
+  const clip = spans => spans.map(([a, b]) => {
+    if (cut && b > cut) { clipped = true; return [a, cut]; }
+    return [a, b];
+  }).filter(([a, b]) => b - a >= 20 * MIN);
+  const plan = (mc?.groups || []).map(G => {
+    const eff = clip(G.projEffect?.length ? G.projEffect : G.effect).map(span2).join(', ');
+    const pk = clip(G.peak).map(span2).join(', ');
+    return eff ? `오늘 집중하기 좋은 시간 ${eff}${pk ? ` · 가장 높음 ${pk}` : ''}${G.projEffect?.length ? ' (예정 약 포함)' : ''}` : '';
+  }).filter(Boolean).join('<br>') + (clipped ? `<br>평소 잠드는 ${C.fmtTime(mc.sleepAt)} 30분 전까지만 적었어요` : '');
+  return win(`아침 루틴 ${n}/${steps.length}`, 'MORNING', `${rows}${plan ? `<p class="rt-plan">${plan}</p>` : ''}`, 'routine', `<button class="icon-btn" data-act="rt-close" aria-label="아침 루틴 닫기">${IC.x}</button>`);
+}
+
+// ---------- 금요일 5줄 보고 ----------
+const reportCfg = () => store.game()?.report || { to: '', nums: [] };
+function weekFacts(endKey) {
+  const days = C.lastDays(endKey, 7).map(getDay).filter(Boolean);
+  const done = days.flatMap(d => C.top3Of(d).filter(t => t.done).map(t => t.text));
+  const count = id => days.reduce((a, d) => a + C.live(d).filter(e => e.item === id).length, 0);
+  const focus = days.reduce((a, d) => a + C.live(d).filter(e => e.item === 'focus').reduce((x, e) => x + (e.min || 0), 0), 0);
+  const counts = C.activeItems(cfg()).filter(i => i.type === 'count' && !['water', 'coffee'].includes(i.id) || i.goal?.total).map(i => [i, count(i.id)]).filter(([, n]) => n);
+  return { done, counts, focus };
+}
+function openReportSheet(key = todayKey()) {
+  const rc = reportCfg(), f = weekFacts(key);
+  const prev = GM.reportsOf([getDay(key)]).pop();
+  // 같은 일은 한 번만, 여러 날 했으면 ×횟수
+  const doneN = new Map();
+  for (const x of f.done) doneN.set(x.trim(), (doneN.get(x.trim()) || 0) + 1);
+  const did = prev?.did ?? [...doneN].slice(0, 5).map(([x, n]) => (n > 1 ? `${x} ×${n}` : x)).join(', ');
+  const auto = [...f.counts.map(([i, n]) => `${i.name} ${n}${i.unit || '번'}`), f.focus ? `집중 ${C.fmtDur(f.focus)}` : ''].filter(Boolean).join(' · ');
+  const nums = (rc.nums || []).map(n => `<label class="fld"><span>${esc(n.label)}</span><input name="num-${esc(n.id)}" inputmode="decimal" value="${esc(prev?.nums?.[n.id] ?? '')}" autocomplete="off"></label>`).join('');
+  openSheet('금요일 5줄', 'REPORT', `<p class="lead">${rc.to ? `${esc(rc.to)}에게 ` : ''}매주 금요일에 보내요. 매일 보고는 안 해요. 이번 주 기록은 미리 채워 뒀어요.</p>
+    <label class="fld"><span>1. 이번 주 한 것</span><textarea name="did" rows="2" maxlength="200">${esc(did)}</textarea></label>
+    <div class="fld"><span>2. 숫자${auto ? ` <small>· ${esc(auto)}</small>` : ''}</span></div>${nums ? `<div class="fld2">${nums}</div>` : ''}
+    <label class="fld"><span>3. 막힌 것</span><textarea name="stuck" rows="2" maxlength="200">${esc(prev?.stuck || '')}</textarea></label>
+    <label class="fld"><span>4. 다음 주</span><textarea name="next" rows="2" maxlength="200">${esc(prev?.next || '')}</textarea></label>
+    <label class="fld"><span>5. 부탁</span><textarea name="ask" rows="2" maxlength="200">${esc(prev?.ask || '')}</textarea></label>
+    <div class="row-btns"><button class="btn pri" data-act="save">저장하고 보내기</button><button class="btn" data-act="keep">저장만</button></div>`, {
+    save() {
+      const r = collect();
+      closeSheet();
+      share(reportText(key, r, auto));
+    },
+    keep() {
+      collect();
+      closeSheet();
+      toast('저장했어요');
+    },
+  });
+  function collect() {
+    const r = { did: v('did').trim(), stuck: v('stuck').trim(), next: v('next').trim(), ask: v('ask').trim(), nums: {} };
+    for (const n of rc.nums || []) if (v('num-' + n.id).trim()) r.nums[n.id] = v('num-' + n.id).trim();
+    if (prev) store.updateEvent(key, prev.id, r);
+    else store.logEvent(key, 'report5', r);
+    return r;
+  }
+}
+function reportText(key, r, auto) {
+  const rc = reportCfg();
+  const nums = [...(rc.nums || []).filter(n => r.nums?.[n.id]).map(n => `${n.label} ${r.nums[n.id]}`), auto].filter(Boolean).join(' · ');
+  return [`[금요일 5줄 · ${C.fmtDate(key)}]`, `1. 이번 주 한 것: ${r.did || '-'}`, `2. 숫자: ${nums || '-'}`, `3. 막힌 것: ${r.stuck || '없음'}`, `4. 다음 주: ${r.next || '-'}`, `5. 부탁: ${r.ask || '없음'}`].join('\n');
+}
+
+// ---------- 메인 퀘스트 ----------
+const md = (k, noYear = false) => {
+  const d = C.keyToDate(k);
+  return `${!noYear && d.getFullYear() !== new Date().getFullYear() ? `${String(d.getFullYear()).slice(2)}년 ` : ''}${d.getMonth() + 1}/${d.getDate()}`;
+};
+const stageWhen = s => (s.from && s.to ? `${md(s.from)}~${md(s.to, s.to.slice(0, 4) === s.from.slice(0, 4))}` : s.date ? md(s.date) : s.when || '');
+function questHtml(g) {
+  const Q = g.quest;
+  if (!Q) return '';
+  const cur = Q.current, tk = todayKey();
+  const tasks = cur ? cur.tasks.map(t => {
+    const sub = t.isAuto ? `${fmtNum(t.value ?? 0)} / ${fmtNum(t.auto.at)}${t.auto.unit || ''} · 기록에서 자동으로 세요` : t.ok ? `${C.fmtDate(t.evKey)}에 끝냄` : '';
+    return `<button class="qt ${t.ok ? 'ok' : ''}" ${t.isAuto ? 'aria-disabled="true"' : `data-act="q-toggle" data-arg="${esc(t.id)}"`}><span class="box">${IC.check}</span><span class="qt-t">${esc(t.text)}${sub ? `<small>${esc(sub)}</small>` : ''}</span></button>`;
+  }).join('') : '<p class="empty">모든 단계를 끝냈어요</p>';
+  const dd = cur?.end ? C.ddayInfo({ label: cur.name, from: cur.start, to: cur.end }, tk).text : '';
+  const stages = Q.stages.map(s => `<li class="qs ${s.status} ${s === cur ? 'cur' : ''}"><span class="qs-n">${s.status === 'done' ? '✓' : ''}</span><b>${esc(s.name)}</b><span class="qs-w">${esc(stageWhen(s))}</span><i>${s.ok}/${s.tasks.length}</i></li>`).join('');
+  const pains = allDays().flatMap(d => C.live(d).filter(e => e.item === 'pain_note' && e.note).map(e => ({ ...e, key: d.date })));
+  const painHtml = itemById('pain_note') ? `<details><summary>틈 노트 · 사장님 불편 ${pains.length}줄</summary>${pains.length ? `<ul class="med-ul">${pains.slice(-8).reverse().map(p => `<li>${esc(p.note)} <small class="muted">${md(p.key)}</small></li>`).join('')}</ul>` : '<p class="muted">아직 없어요. 가게를 나오면서 한 줄씩.</p>'}</details>` : '';
+  const reports = GM.reportsOf(allDays());
+  return win(`메인 퀘스트 · ${esc(Q.title)}`, 'QUEST', `${Q.goal ? `<p class="lead">${esc(Q.goal)}</p>` : ''}${Q.rule ? `<p class="st-key">${esc(Q.rule)}</p>` : ''}
+    ${cur ? `<h3 class="sub-h">지금 단계 · ${esc(cur.name)} <small>${esc(stageWhen(cur))}${dd ? ` · ${esc(dd)}` : ''}</small></h3>${cur.goal ? `<p class="muted">${esc(cur.goal)}</p>` : ''}<div class="q-tasks">${tasks}</div>` : ''}
+    <h3 class="sub-h">전체 길 <small>${Q.doneStages}/${Q.stages.length} 단계</small></h3><ol class="q-stages">${stages}</ol>
+    ${painHtml}
+    <details><summary>금요일 5줄 · ${reports.length}번 보냄</summary>${reports.length ? `<ul class="med-ul">${reports.slice(-4).reverse().map(r => `<li>${md(r.key)} · ${esc(r.did || '')}</li>`).join('')}</ul>` : ''}<div class="row-btns"><button class="btn sm pri" data-act="report5">이번 주 보고 쓰기</button></div></details>
+    ${Q.traps?.length ? `<details><summary>미끄러지는 곳</summary><ul class="med-ul">${Q.traps.map(x => `<li>${esc(x)}</li>`).join('')}</ul></details>` : ''}
+    ${Q.signals?.length ? `<details><summary>분기마다 볼 신호</summary><ul class="med-ul">${Q.signals.map(x => `<li>${esc(x)}</li>`).join('')}</ul></details>` : ''}
+    <p class="hint">과제 하나 +${GM.QUEST_BONUS} EXP. 체크는 오늘 기록에 남아서 다른 기기와도 맞춰져요.</p>`);
 }
 
 // ---------- 성장 탭: 레벨, 스탯(개선 지도), 시즌, 주간 ----------
@@ -629,7 +791,7 @@ function weekHtml() {
   const k7 = C.lastDays(tk, 7), d7 = k7.map(getDay), s = C.summarize(d7, c);
   const { se, stats: ss } = seasonDays();
   const g = gameCtx();
-  let h = levelCardHtml(g) + statsHtml(g);
+  let h = questHtml(g) + levelCardHtml(g) + statsHtml(g);
   h += win(`시즌 ${se.n}`, 'SEASON', `<div class="goal-h"><span>${C.SEASON_DAYS}일 중 <b>${se.day}일째</b></span><span>${se.left ? `${C.fmtDate(se.end)}까지 · <b>D-${se.left}</b>` : '<b>오늘이 마지막 날</b>'}</span></div>
     <span class="mini-bar"><i class="blue" style="width:${Math.round((se.day / C.SEASON_DAYS) * 100)}%"></i></span>
     <div class="minis" style="margin-top:10px">${mini('기록한 날', ss.recorded, '일')}${mini('필수 달성', ss.essDays, '일')}${mini('CLEAR', ss.clearDays, '일')}</div>
@@ -1148,15 +1310,24 @@ function openTop3Sheet(id) {
     if (cur?.text) store.setTop3(key, id, { text: '', done: 0 });
     closeSheet();
   };
+  const dueVal = cur?.due ? C.fmtTime(cur.due) : '';
+  const quick = [[60, '1시간 뒤'], [120, '2시간 뒤'], [180, '3시간 뒤']].map(([m, l]) => `<button type="button" data-act="due-in" data-arg="${m}">${l}</button>`).join('');
   openSheet('오늘의 핵심', 'TOP 3', `<label class="fld"><span>오늘 꼭 끝낼 일 하나</span><input name="text" maxlength="40" value="${esc(cur?.text || '')}" placeholder="3장 문제 10개 풀기" autocomplete="off" autofocus></label>
     ${carry.length ? `<div class="fld"><span>어제 못 끝낸 것에서 가져오기</span><div class="sugg">${carry.map(t => `<button data-act="carry" data-arg="${esc(t.text)}">${esc(t.text)}</button>`).join('')}</div></div>` : ''}
-    <p class="hint">끝이 보이게 적어요. "공부" 대신 "3장 문제 10개".</p>
+    <p class="hint">끝이 보이게 적어요. "공부" 대신 "3장 문제 10개". 크면 반으로 잘라요.</p>
+    <div class="fld2"><label class="fld"><span>마감 시각 (외부 마감)</span><input type="time" name="due" value="${dueVal}"></label><label class="fld"><span>누구에게 보고 (선택)</span><input name="to" maxlength="12" value="${esc(cur?.to || '')}" placeholder="형" autocomplete="off"></label></div>
+    <div class="sugg" style="margin:-4px 0 12px">${quick}</div>
+    <p class="hint">마감 30분 전과 지난 뒤에 코치가 물어봐요. 보고할 사람을 적으면 끝냈을 때 바로 보낼 문장을 만들어 줘요.</p>
     <div class="row-btns"><button class="btn pri" data-act="save">저장</button>${cur?.text ? '<button class="btn danger" data-act="clear">비우기</button>' : ''}</div>`, {
     save() {
       const text = v('text').trim();
       if (!text) return clear();
-      store.setTop3(key, id, { text });
+      const hm = v('due');
+      store.setTop3(key, id, { text, due: hm ? C.tsFor(key, hm, rollover()) : 0, to: v('to').trim() || '' });
       closeSheet();
+    },
+    'due-in'(m) {
+      $('#sheet [name="due"]').value = C.fmtTime(now() + m * MIN);
     },
     clear,
     carry(text) {
@@ -1607,7 +1778,9 @@ function finishFocus(auto) {
   if (auto) {
     haptic([200, 100, 200]);
     beep();
-    toast(`집중 ${min}분 끝. 잠깐 쉬어요`);
+    // 2분 시작이 끝나면 바로 이어 갈 수 있게
+    if (f.dur <= 5) toast(`${min}분 했어요. 시작이 제일 어려워요`, { label: '25분 이어서', fn: () => actions.focus('25' + (f.t3 ? ':' + f.t3 : '')) });
+    else toast(`집중 ${min}분 끝. 5분 쉬어요`, { label: '한 번 더', fn: () => actions.focus(f.dur + (f.t3 ? ':' + f.t3 : '')) });
   } else toast(min >= 1 ? `집중 ${min}분 기록했어요` : '1분이 안 돼서 기록하지 않았어요');
 }
 
@@ -1733,6 +1906,32 @@ const actions = {
     ui.peakRating = arg;
     render();
   },
+  'rt-done'(id) {
+    store.logEvent(todayKey(), 'rt:' + id);
+    haptic(10);
+  },
+  'rt-close'() {
+    store.setLocal({ seen: { ...local().seen, ['rt:' + todayKey()]: 1 } });
+  },
+  'q-toggle'(id) {
+    const t = gameCtx().quest?.stages.flatMap(s => s.tasks).find(x => x.id === id);
+    if (!t || t.isAuto) return;
+    if (t.ok) {
+      store.deleteEvent(t.evKey, t.ev);
+      toast('체크를 풀었어요');
+    } else {
+      store.logEvent(todayKey(), 'q:' + id);
+      haptic([20, 30, 20]);
+      toast(`과제 완료 · +${GM.QUEST_BONUS} EXP`);
+    }
+  },
+  report5: () => openReportSheet(),
+  't3-report'(id) {
+    const t = C.top3Of(store.day(viewKey())).find(x => x.id === id);
+    if (!t) return;
+    const when = t.done ? C.fmtTime(t.done) : '';
+    share(`${t.to ? `${t.to}, ` : ''}오늘 핵심 끝냈어요: ${t.text}${t.due ? ` (${C.fmtTime(t.due)} 마감, ${when}에 끝)` : when ? ` (${when})` : ''}`);
+  },
   'wx-toggle'() {
     const W = wx();
     if (W.on) return store.setLocal({ wx: { ...W, on: false } });
@@ -1760,6 +1959,12 @@ const actions = {
     // 체크한 타일을 누르면 바로 시각 고치기 (늦게 기록한 걸 맞추는 게 제일 흔한 일이라)
     if (it.type === 'check' && s.done) return openEventSheet(s.evs[s.evs.length - 1].id, key);
     if (key !== todayKey() || (it.type === 'check' && s.skipped)) return openTileSheet(id);
+    // 글이 본체인 기록(예: 사장님 불편 한 줄)은 바로 쓰는 칸을 연다
+    if (it.type === 'log' && it.ask === 'note' && it.noteFirst) {
+      const ev = store.logEvent(key, it.id, { autoWake: true });
+      afterLog(it, key, ev);
+      return openEventSheet(ev.id, key);
+    }
     addAt(it, key);
   },
   'tile-menu': id => openTileSheet(id),
@@ -1799,8 +2004,8 @@ const actions = {
     } catch {
       audio = null;
     }
-    store.setLocal({ focus: { start: now(), dur: +m, label: label || '' } });
-    toast(`${m}분 집중 시작`);
+    store.setLocal({ focus: { start: now(), dur: +m, label: label || '', t3: t3 || '' } });
+    toast(+m <= 5 ? `${m}분만. 파일 열고 첫 줄` : `${m}분 집중 시작`);
   },
   'focus-stop': () => finishFocus(false),
   'focus-cancel'() {
@@ -1965,7 +2170,7 @@ window.addEventListener('popstate', () => closeSheet(true));
 // 하루 목표, 레벨 업, 스탯 등급이 오르는 순간을 알려준다 (내가 기록했을 때만, 동기화로 들어온 건 조용히)
 const snap = () => {
   const g = gameCtx();
-  return { key: todayKey(), exp: g.today.exp, lv: g.L.lv, tier: g.tier.name, steps: Object.fromEntries(g.stats.map(s => [s.id, [s.reached, s.grade, s.name]])) };
+  return { key: todayKey(), exp: g.today.exp, lv: g.L.lv, tier: g.tier.name, steps: Object.fromEntries(g.stats.map(s => [s.id, [s.reached, s.grade, s.name]])), stages: g.quest?.doneStages || 0, stageName: g.quest?.stages?.[(g.quest?.doneStages || 1) - 1]?.name || '' };
 };
 let lastSnap = null;
 function celebrate(a, b) {
@@ -1981,6 +2186,10 @@ function celebrate(a, b) {
       big = 'RANK UP!';
       msgs.push(`${name} ${grade} 달성 · +${GM.STEP_BONUS} EXP`);
     }
+  }
+  if (b.stages > a.stages) {
+    big = 'QUEST CLEAR!';
+    msgs.push(`메인 퀘스트 '${b.stageName}' 단계 클리어`);
   }
   if (b.lv > a.lv) {
     big = 'LEVEL UP!';

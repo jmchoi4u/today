@@ -144,3 +144,69 @@ export function statsNow(def, ctx) {
 }
 
 export const statBonus = stats => stats.reduce((a, s) => a + s.reached * STEP_BONUS, 0);
+
+// ---------- 메인 퀘스트 ----------
+// 과제를 끝내면 그날 기록에 'q:과제id' 이벤트로 남긴다. 기록은 어떤 버전의 앱이든 그대로 동기화한다.
+export const QUEST_BONUS = 50;
+
+export function questDone(days) {
+  const done = new Map();
+  for (const d of days) for (const e of d ? C.live(d) : []) if (e.item.startsWith('q:')) done.set(e.item.slice(2), { t: e.t, key: d.date, ev: e.id });
+  return done;
+}
+
+// 금요일 5줄 보고 기록 ('report5' 이벤트)
+export function reportsOf(days, from) {
+  const out = [];
+  for (const d of days) for (const e of d ? C.live(d) : []) if (e.item === 'report5' && (!from || d.date >= from)) out.push({ ...e, key: d.date });
+  return out.sort((a, b) => a.t - b.t);
+}
+
+export function questState(quest, ctx) {
+  if (!quest?.stages?.length) return null;
+  const done = questDone(ctx.days);
+  const today = ctx.todayKey;
+  let current = null;
+  const stages = quest.stages.map(st => {
+    const tasks = (st.tasks || []).map(t => {
+      if (t.auto) {
+        const value = t.auto.type === 'reports' ? reportsOf(ctx.days, t.auto.from).length : metricValue(t.auto, ctx);
+        return { ...t, isAuto: true, value, ok: value != null && value >= t.auto.at };
+      }
+      const d = done.get(t.id);
+      return { ...t, ok: !!d, at: d?.t, ev: d?.ev, evKey: d?.key };
+    });
+    const ok = tasks.filter(t => t.ok).length;
+    const start = st.from || st.date || null, end = st.to || st.date || null;
+    const allDone = tasks.length > 0 && ok === tasks.length;
+    const status = allDone ? 'done' : start && today < start ? 'later' : 'now';
+    return { ...st, tasks, ok, start, end, status };
+  });
+  current = stages.find(s => s.status !== 'done') || null;
+  const bonus = stages.reduce((a, s) => a + s.ok * QUEST_BONUS, 0);
+  return { ...quest, stages, current, bonus, doneStages: stages.filter(s => s.status === 'done').length };
+}
+
+// ---------- 아침 루틴 ----------
+export const DEFAULT_ROUTINE = [
+  { id: 'wake', text: '일어난 시각 남기기', check: 'wake' },
+  { id: 'water', text: '물 한 잔', check: 'item', item: 'water' },
+  { id: 'med', text: '아침 약', check: 'item', item: 'med_am' },
+  { id: 'light', text: '햇빛 10분 (창문만 열어도 좋아요)', check: 'manual' },
+  { id: 'top3', text: '오늘 꼭 끝낼 일 하나와 마감 시각', check: 'top3' },
+  { id: 'phone', text: '폰은 손 닿지 않는 곳에', check: 'manual' },
+  { id: 'focus', text: '첫 집중 25분', check: 'focus' },
+];
+export function routineState(steps, day, { focusOn = false } = {}) {
+  const evs = day ? C.live(day) : [];
+  const has = id => evs.some(e => e.item === id);
+  return (steps || DEFAULT_ROUTINE).map(s => {
+    let done = false;
+    if (s.check === 'wake') done = !!C.wakeOf(day);
+    else if (s.check === 'item') done = has(s.item);
+    else if (s.check === 'top3') done = C.top3Of(day).some(t => t.due || t.done); // 마감 시각까지 정해야 끝
+    else if (s.check === 'focus') done = focusOn || has('focus');
+    else done = has('rt:' + s.id);
+    return { ...s, done };
+  });
+}
