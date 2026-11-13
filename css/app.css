@@ -357,7 +357,7 @@ summary{font-family:var(--font-display);font-size:14.5px;cursor:pointer;min-heig
 .hud-exp i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--exp),var(--gold));transition:width .7s cubic-bezier(.2,.8,.2,1)}
 .hud-exp span{position:relative;display:block;text-align:center;font-family:var(--font-display);font-size:11.5px;line-height:13px;color:var(--hud-ink);text-shadow:1px 0 var(--frame),-1px 0 var(--frame),0 1px var(--frame),0 -1px var(--frame)}
 .hud-exp b{font-weight:400}
-.tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));background:var(--panel);border-top:2.5px solid var(--frame);padding:0 max(8px,env(safe-area-inset-right,0px)) var(--safe-b) max(8px,env(safe-area-inset-left,0px))}
+.tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--panel);border-top:2.5px solid var(--frame);padding:0 max(8px,env(safe-area-inset-right,0px)) var(--safe-b) max(8px,env(safe-area-inset-left,0px))}
 .tabs button{display:grid;justify-items:center;gap:0;min-height:56px;padding:7px 0 5px;background:none;border:0;font-family:var(--font-display);font-size:12.5px;color:var(--ink-mute)}
 .tabs button .ic{font-size:22px}
 .tabs button.on{color:var(--accent)}
@@ -586,3 +586,12 @@ summary{font-family:var(--font-display);font-size:14.5px;cursor:pointer;min-heig
 .note-time{margin:2px 0 12px}
 .note-time summary{cursor:pointer;color:var(--ink-soft);font-size:13px;padding:6px 0}
 .note-time[open] summary{margin-bottom:8px}
+.add-row{margin:0 0 14px}
+.add-row .btn.pri{flex:1;min-height:48px;font-size:16px}
+.add-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:6px}
+.add-pick{display:flex;align-items:center;gap:9px;min-height:54px;padding:9px 11px;text-align:left;background:var(--well);border:2px solid var(--well-line);border-radius:14px;font:inherit;color:inherit}
+.add-pick:active{border-color:var(--accent)}
+.add-pick .ap-ic{font-size:21px;line-height:1}
+.add-pick .ap-n{display:grid;font-size:14.5px;line-height:1.25;min-width:0}
+.add-pick small{font-size:11.5px;color:var(--ink-soft)}
+.sec-h{font-family:var(--font-display);font-weight:400;font-size:19px;margin:26px 4px 10px}

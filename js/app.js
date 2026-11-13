@@ -7,7 +7,7 @@ import * as PK from './pk.js';
 import * as GM from './game.js';
 import * as WX from './weather.js';
 
-const VERSION = '1.4.2';
+const VERSION = '1.5';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -596,10 +596,12 @@ function todayHtml() {
 
 // ---------- 흐름 탭 ----------
 
+// 흐름·약 탭: 맨 위에서 무엇이든 시각을 정해 추가하고, 아래로 하루 흐름 → 기록 → 약
 function flowHtml() {
   const key = viewKey(), day = store.day(key), today = isToday(), evs = C.live(day);
   const w = C.wakeOf(day), sl = C.sleepOf(day);
-  let h = win(`${today ? '오늘' : C.fmtDate(key)} 흐름`, 'FLOW', evs.length || w ? flowSvg(day, cfg(), now(), today, medBands(key)) : '<p class="empty">아직 기록이 없어요. 오늘 탭에서 타일을 눌러 시작해요.</p>');
+  let h = `<div class="row-btns add-row"><button class="btn pri" data-act="add-open">＋ 기록 추가</button>${!w ? '<button class="btn" data-act="time-wake">☀️ 기상</button>' : ''}${w && !sl ? '<button class="btn" data-act="time-sleep">🌙 취침</button>' : ''}</div>`;
+  h += win(`${today ? '오늘' : C.fmtDate(key)} 흐름`, 'FLOW', evs.length || w ? flowSvg(day, cfg(), now(), today, medBands(key)) : '<p class="empty">아직 기록이 없어요. 위의 "＋ 기록 추가"나 오늘 탭의 타일로 시작해요.</p>');
   const rows = [];
   const row = (t, icon, name, detail, act, arg = '') =>
     `<button class="row" data-act="${act}" data-arg="${esc(arg)}"><span class="row-t">${C.fmtTime(t)}</span><span class="row-ic">${esc(icon)}</span><span class="row-b">${esc(name)}${detail ? `<small>${esc(detail)}</small>` : ''}</span><span class="row-go">${IC.right}</span></button>`;
@@ -610,8 +612,8 @@ function flowHtml() {
   }
   if (sl) rows.push([sl, row(sl, '🌙', '취침', '', 'time-sleep')]);
   rows.sort((a, b) => a[0] - b[0]);
-  h += win('기록', 'LOG', rows.length ? `<div class="log">${rows.map(r => r[1]).join('')}</div>` : '<p class="empty">기록이 없어요.</p>', '', `<span class="win-count">${evs.length}</span>`);
-  if (w && !sl) h += `<div class="row-btns" style="margin:-4px 0 16px"><button class="btn" data-act="time-sleep">취침 시각 기록</button></div>`;
+  h += win('기록', 'LOG', rows.length ? `<div class="log">${rows.map(r => r[1]).join('')}</div><p class="hint">눌러서 시각·내용을 고치거나 지워요. 빠진 건 맨 위 "＋ 기록 추가"로.</p>` : '<p class="empty">기록이 없어요.</p>', '', `<span class="win-count">${evs.length}</span>`);
+  h += medSectionsHtml(key);
   return h;
 }
 
@@ -860,18 +862,20 @@ function weekHtml() {
 const DISCLAIM = '<p class="disclaimer">허가사항 평균값에 맞춘 일반적인 모양이에요. 느끼는 효과는 사람마다 달라서, 아래 "내 데이터로 본 피크"가 진짜 내 피크예요. 복용 시간과 용량은 처방한 의사와 정해요.</p>';
 const span2 = ([a, b]) => `${C.fmtTime(a)}~${C.fmtTime(b)}`;
 
-function medHtml() {
+// 약: 흐름 탭 아래쪽 (곡선 → 복용 기록 → 언제 먹으면 → 내 피크 → 약 정보)
+function medSectionsHtml(key) {
   const P = profiles();
+  const head = '<h2 class="sec-h" id="sec-med">💊 약</h2>';
   if (!P.length) {
-    return DISCLAIM + win('약 정보', 'MEDS', `<p class="lead">아직 약 정보가 없어요. 비공개 저장소에 약 정보 파일(meds.json)이 있으면 동기화할 때 받아와요.</p>
+    return head + win('약 정보', 'MEDS', `<p class="lead">약 정보 파일(meds.json)이 비공개 저장소에 있으면 동기화할 때 받아와서, 약 곡선과 복용 기록이 여기 나와요.</p>
       <div class="row-btns">${local().gh ? '<button class="btn pri" data-act="sync-now">지금 동기화</button>' : '<button class="btn pri" data-act="sync-open">비공개 저장소 연결</button>'}</div>`);
   }
-  const key = viewKey(), today = key === todayKey(), mc = medCtx(key);
+  const today = key === todayKey(), mc = medCtx(key);
   const linked = new Set(mc.items.flatMap(i => (i.drugs || []).map(l => l.id)));
   const unlinked = P.filter(p => !linked.has(p.id));
-  let h = DISCLAIM;
+  let h = head;
   if (unlinked.length) h += medLinkHtml(unlinked, mc.items);
-  h += medGraphHtml(mc, today, P, linked);
+  h += medGraphHtml(mc, today, P, linked) + DISCLAIM;
   h += medTrackHtml(key);
   const curves = P.filter(p => p.kind === 'curve' && linked.has(p.id));
   if (curves.length) h += medPlanHtml(mc, curves);
@@ -1070,7 +1074,7 @@ function setHtml() {
 
 // ---------- 그리기 ----------
 
-const VIEWS = { today: todayHtml, flow: flowHtml, med: medHtml, week: weekHtml, set: setHtml };
+const VIEWS = { today: todayHtml, flow: flowHtml, med: flowHtml, week: weekHtml, set: setHtml }; // 약은 흐름 탭에 합쳤다
 let queued = false, downAt = 0, pending = false;
 function render() {
   // 손가락이 눌려 있는 동안 화면을 바꾸면 탭이 씹힌다. 뗀 뒤에 그린다.
@@ -1185,8 +1189,12 @@ function afterLog(it, key, ev) {
 }
 function addAt(it, key, t) {
   if (it.type === 'log' && (it.ask === 'min' || it.ask === 'num')) return openLogSheet(it, key, t);
-  afterLog(it, key, store.logEvent(key, it.id, { t, autoWake: key === todayKey() }));
+  const ev = store.logEvent(key, it.id, { t, autoWake: key === todayKey() });
+  afterLog(it, key, ev);
+  if (opensSheet(it)) openEventSheet(ev.id, key, { fresh: true }); // 글이 본체인 기록은 바로 쓰는 칸
 }
+// 기록하고 나서 창을 하나 더 여는 항목 (앞 창을 닫지 않고 바꿔 끼워야 뒤로 가기와 꼬이지 않는다)
+const opensSheet = it => it.type === 'log' && (it.ask === 'min' || it.ask === 'num' || (it.ask === 'note' && !!it.noteFirst));
 
 function openLogSheet(it, key, t) {
   const isMin = it.ask === 'min';
@@ -1231,7 +1239,7 @@ function openTileSheet(id) {
   openSheet(`${it.icon} ${it.name} · 언제 했어요?`, 'QUEST', body, {
     'add-tw'() {
       const t = tw.t;
-      closeSheet();
+      if (!opensSheet(it)) closeSheet();
       addAt(it, key, t);
     },
     skip() {
@@ -1243,6 +1251,48 @@ function openTileSheet(id) {
     },
     'edit-item'() {
       openItemSheet(it.id);
+    },
+  });
+}
+
+// ＋ 기록 추가: 무엇이든 고르고 → 시각을 정한다. 지난 일, 다른 날짜도 여기서
+function openAddSheet() {
+  const key = viewKey(), day = store.day(key), today = key === todayKey();
+  const w = C.wakeOf(day), sl = C.sleepOf(day);
+  const pick = (act, arg, icon, name, sub) => `<button class="add-pick" data-act="${act}" data-arg="${esc(arg)}"><span class="ap-ic" aria-hidden="true">${esc(icon)}</span><span class="ap-n">${esc(name)}${sub ? `<small>${esc(sub)}</small>` : ''}</span></button>`;
+  const items = C.activeItems(cfg(), key).map(it => {
+    const s = C.itemState(day, it);
+    const sub = s.skipped ? '건너뜀' : s.count ? (it.type === 'count' ? `${s.count}${it.unit || ''}` : `${C.fmtTime(s.last)}${s.count > 1 ? ` 외 ${s.count - 1}` : ''}`) : '';
+    return pick('add-item', it.id, it.icon, it.name, sub);
+  });
+  const body = `<div class="add-grid">${pick('add-wake', '', '☀️', '기상', w ? C.fmtTime(w) : '')}${pick('add-sleep', '', '🌙', '취침', sl ? C.fmtTime(sl) : '')}${pick('add-focus', '', '🎯', '집중', '타이머 없이 한 것')}${items.join('')}</div><p class="hint">고르면 시각을 정해요. 지난 일도 여기서 넣어요.</p>`;
+  openSheet(`${today ? '오늘' : C.fmtDate(key)} 무엇을 남길까요?`, 'ADD', body, {
+    'add-wake': () => openTimeSheet('wake'),
+    'add-sleep': () => openTimeSheet('sleep'),
+    'add-item': id => openTileSheet(id),
+    'add-focus': () => openFocusLogSheet(key),
+  });
+}
+
+// 타이머 없이 한 집중을 나중에 남긴다
+function openFocusLogSheet(key) {
+  const today = key === todayKey();
+  const presets = today ? [[now(), '지금']] : [];
+  const def = today ? now() - 25 * MIN : C.dayStartTs(key, rollover()) + 10 * HOUR;
+  const body = `<div class="fld"><span>얼마나 했어요?</span>${seg('min', 25, [15, 25, 50, 90].map(m => [m, m + '분']))}</div>
+    <label class="fld"><span>직접 입력 (분)</span><input name="minx" type="number" inputmode="numeric" min="1" max="600" placeholder="비워 두면 위에서 고른 값"></label>
+    <h3 class="sub-h">언제 시작했어요?</h3>${twHtml(key, def, presets)}
+    <label class="fld"><span>무엇을 (선택)</span><input name="note" maxlength="60" autocomplete="off" placeholder="코테 2문제"></label>
+    <p class="err" id="sheet-err" hidden></p><div class="row-btns"><button class="btn pri" data-act="save">기록</button></div>`;
+  openSheet('🎯 집중 · 지난 기록', 'FOCUS', body, {
+    save() {
+      const min = Math.round(parseFloat(v('minx')) || +segv('min'));
+      if (!(min > 0)) return sheetErr('시간을 골라 주세요');
+      // 끝난 집중을 남기는 칸이라, 끝이 지금보다 뒤면 지금 끝난 걸로 맞춘다
+      const t = today && tw.t + min * MIN > now() ? now() - min * MIN : tw.t;
+      const ev = store.logEvent(key, 'focus', { t, min, note: v('note').trim() || undefined, autoWake: today });
+      closeSheet();
+      afterLog({ id: 'focus', ...nameOf('focus') }, key, ev);
     },
   });
 }
@@ -1846,11 +1896,13 @@ function runCoach(a) {
 
 const actions = {
   tab(arg) {
-    ui.tab = arg;
+    ui.tab = arg === 'med' ? 'flow' : arg;
     hideLogged();
     paint();
-    window.scrollTo(0, 0);
+    if (arg === 'med') $('#sec-med')?.scrollIntoView();
+    else window.scrollTo(0, 0);
   },
+  'add-open': () => openAddSheet(),
   'day-prev'() {
     ui.date = C.addDays(viewKey(), -1);
     const k = ui.date;
