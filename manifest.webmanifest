@@ -9,6 +9,12 @@
   "orientation": "portrait",
   "background_color": "#a6dbf6",
   "theme_color": "#a6dbf6",
+  "shortcuts": [
+    { "name": "아침 약 먹었어요", "short_name": "아침 약", "url": "./?do=med_am", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "오후 약 먹었어요", "short_name": "오후 약", "url": "./?do=med_pm", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "물 한 잔", "short_name": "물", "url": "./?do=water", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "25분 집중 시작", "short_name": "집중 25", "url": "./?focus=25", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ],
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },

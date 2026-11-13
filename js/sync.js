@@ -6,6 +6,7 @@ import { CFG_PATH, pathOfDay } from './store.js';
 const API = 'https://api.github.com';
 export const KEEP_DAYS = 35;
 export const MEDS_PATH = 'meds.json'; // 약 정보 (앱은 읽기만 한다)
+export const GAME_PATH = 'game.json'; // 스탯 정의 (앱은 읽기만 한다)
 
 export class SyncError extends Error {
   constructor(kind, message) {
@@ -117,19 +118,22 @@ export function createSync({ store, fetchFn, now = Date.now, online = () => true
     store.setSha(CFG_PATH, j.sha);
     store.setEtag(CFG_PATH, r.headers.get('etag'));
   }
-  async function pullMeds() {
-    const r = await req('GET', contents(MEDS_PATH), { etag: store.etag(MEDS_PATH) });
+  // 읽기만 하는 참고 파일 (약 정보, 스탯 정의): 바뀌었을 때만 받는다
+  async function pullRef(path, has, set, valid) {
+    const r = await req('GET', contents(path), { etag: store.etag(path) });
     if (r.status === 304) return;
     if (r.status === 404) {
-      if (store.medsDoc()) store.setMeds(null);
-      store.setEtag(MEDS_PATH, null);
+      if (has()) set(null);
+      store.setEtag(path, null);
       return;
     }
     if (!r.ok) throw new SyncError('http', `GitHub 응답 오류 (${r.status})`);
     const doc = parse(await r.json());
-    if (doc && Array.isArray(doc.drugs)) store.setMeds(doc);
-    store.setEtag(MEDS_PATH, r.headers.get('etag'));
+    if (valid(doc)) set(doc);
+    store.setEtag(path, r.headers.get('etag'));
   }
+  const pullMeds = () => pullRef(MEDS_PATH, () => !!store.medsDoc(), store.setMeds, d => Array.isArray(d?.drugs));
+  const pullGame = () => pullRef(GAME_PATH, () => !!store.game(), store.setGame, d => Array.isArray(d?.stats));
   // 연도 폴더 목록 한 번으로 바뀐 날짜만 골라 받는다
   async function pullDays() {
     const keys = lastDays(todayKey(), KEEP_DAYS);
@@ -175,6 +179,7 @@ export function createSync({ store, fetchFn, now = Date.now, online = () => true
       if (pull) {
         await pullConfig();
         await pullMeds();
+        await pullGame();
         await pullDays();
       }
       for (const p of store.dirtyPaths()) await pushDoc(p, keepalive);

@@ -453,6 +453,87 @@ summary{font-family:var(--font-display);font-size:14.5px;cursor:pointer;min-heig
 .drug-row .since{grid-column:1 / -1;display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;align-items:center;font-size:13px;color:var(--ink-soft);padding-left:32px}
 .coach-scale{margin-top:10px}
 
+/* 복용 일정 · 결정 · 기록 */
+.dose-chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 10px 10px}
+.dose-chip{display:inline-flex;align-items:center;gap:6px;min-height:34px;font-size:13px;background:var(--well);color:var(--ink);border:1.5px solid var(--well-line);border-radius:999px;padding:2px 11px}
+.dose-chip b{font-family:var(--font-display);font-weight:400}
+.dose-chip.k-taken,.dose-chip.k-early{background:var(--plus-soft);border-color:var(--plus)}
+.dose-chip.k-late{background:var(--gold-soft);border-color:var(--exp)}
+.dose-chip.k-due,.dose-chip.k-overdue{background:var(--accent);border-color:var(--frame);color:var(--on-accent)}
+.dose-chip.k-skipped,.dose-chip.k-missed{border-style:dashed;color:var(--ink-soft)}
+.tile.is-due{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-fill)}
+.coach-lines{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:4px}
+.coach-lines li{font-size:13.5px;line-height:1.5;background:var(--well);border:1.5px solid var(--well-line);border-radius:10px;padding:5px 10px}
+.reasons .btn{flex:1 1 40%}
+[data-plan]{margin-bottom:4px}
+.med-proj{fill:none;stroke-width:2.4;stroke-dasharray:6 5;opacity:.9}
+.med-proj.g0{stroke:var(--accent)}
+.med-proj.g1{stroke:var(--potential)}
+.med-dose.plan{stroke:var(--accent);stroke-dasharray:6 4}
+.med-dose-t.plan{fill:var(--accent)}
+.med-legend .lg-proj{background:none;border:2px dashed var(--accent);height:6px}
+.tr-row{padding:8px 0 10px;border-top:1.5px solid var(--well-line)}
+.tr-name{font-family:var(--font-display);font-size:15px;margin-bottom:6px}
+.tr-name small{font-family:var(--font-body);font-size:12px;color:var(--ink-soft)}
+.tr-grid{display:grid;grid-template-columns:repeat(14,minmax(0,1fr));gap:3px}
+.tr-head{margin-bottom:4px}
+.tr-head span{font-family:var(--font-display);font-size:10.5px;color:var(--ink-mute);text-align:center}
+.tr-c{aspect-ratio:1;display:grid;place-items:center;border-radius:6px;border:1.5px solid var(--well-line);font-family:var(--font-display);font-size:12px;color:var(--ink-soft)}
+.tr-c.k-taken,.tr-c.k-early,.tr-legend .k-taken{background:var(--plus);border-color:var(--frame);color:var(--panel)}
+.tr-c.k-late,.tr-legend .k-late{background:var(--exp);border-color:var(--frame);color:var(--on-accent)}
+.tr-c.k-skipped,.tr-legend .k-skipped{border-style:dashed;border-color:var(--ink-mute);color:var(--ink)}
+.tr-c.k-missed,.tr-legend .k-missed{background:var(--bar-bg);border-color:var(--minus);color:var(--minus)}
+.tr-c.k-due,.tr-c.k-overdue{background:var(--accent);border-color:var(--frame);color:var(--on-accent)}
+.tr-c.k-nodoc{border-color:transparent;background:none}
+.tr-sum{font-size:13px;color:var(--ink-soft);margin-top:6px;line-height:1.55}
+.tr-legend i{display:inline-grid;place-items:center;width:16px;height:16px;border-radius:5px;border:1.5px solid var(--well-line);font-style:normal;font-family:var(--font-display);font-size:10px;margin-right:4px;vertical-align:-3px}
+.cmp{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+.cmp th{font-family:var(--font-display);font-weight:400;color:var(--ink-soft);text-align:right;padding:4px 6px;font-size:12.5px}
+.cmp th:first-child{text-align:left}
+.cmp td{padding:5px 6px;border-top:1.5px solid var(--well-line);text-align:right;font-family:var(--font-display)}
+.cmp td:first-child{text-align:left;font-family:var(--font-body);color:var(--ink-soft)}
+
+/* 레벨 · 스탯 */
+.hud-lv b{font-family:var(--font-display);font-weight:400;font-size:18px;letter-spacing:0;margin-left:1px}
+.hud-name{font-family:var(--font-display);font-size:13.5px;opacity:.9}
+.hud-chip{font-family:var(--font-display);font-size:12px;background:var(--hud-track);border:1.5px solid var(--frame);border-radius:999px;padding:0 8px;white-space:nowrap}
+.hud-chip.clear{background:var(--gold);color:var(--gold-ink, #3b2a1e)}
+.hud-max.risk{color:var(--exp)}
+.lv-top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:6px 12px;margin-bottom:10px}
+.lv-now{font-family:var(--font-display);font-size:42px;line-height:1;color:var(--gold);text-shadow:2px 0 var(--frame),-2px 0 var(--frame),0 2px var(--frame),0 -2px var(--frame),2px 2px var(--frame),-2px -2px var(--frame),2px -2px var(--frame),-2px 2px var(--frame)}
+.lv-now b{font-weight:400}
+.lv-meta{display:grid;gap:3px;justify-items:end;text-align:right;font-size:13px;color:var(--ink-soft)}
+.tier-pill{font-family:var(--font-display);font-size:14px;background:var(--accent);color:var(--on-accent);border:2px solid var(--frame);border-radius:999px;padding:0 12px}
+.tiers{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;margin-bottom:6px}
+.tiers span{text-align:center;font-family:var(--font-display);font-size:11.5px;line-height:1.8;background:var(--well);color:var(--ink-soft);border:1.5px solid var(--well-line);border-radius:7px;white-space:nowrap;overflow:hidden}
+.tiers span.on{background:var(--accent);color:var(--on-accent);border-color:var(--frame)}
+.lv-track{height:18px;margin:0 0 8px}
+.lv-ups{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.lv-ups li{font-size:12.5px;background:var(--well);border:1.5px solid var(--well-line);border-radius:999px;padding:1px 10px}
+.lv-ups b{font-family:var(--font-display);font-weight:400}
+.st-key{font-size:13.5px;background:var(--gold-soft);border:2px solid var(--frame);border-radius:12px;padding:8px 11px;margin:6px 0 10px}
+.st-card{background:var(--well);border:2px solid var(--well-line);border-radius:12px;padding:9px 11px 10px;margin-bottom:8px}
+.st-card.keep{background:none;border-style:dashed}
+.st-head{display:flex;align-items:center;gap:8px}
+.st-ic{font-size:18px}
+.st-head b{font-family:var(--font-display);font-weight:400;font-size:16px;flex:1}
+.grade{font-family:var(--font-display);font-size:18px;min-width:44px;text-align:center;background:var(--panel);border:2px solid var(--frame);border-radius:9px;padding:0 8px}
+.grade.up{background:var(--gold);color:#3b2a1e}
+.grade s{font-size:12px;opacity:.6;margin-right:4px}
+.st-prog{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;margin-top:7px;font-size:13px}
+.st-prog b{font-family:var(--font-display);font-weight:400}
+.st-note{font-size:12.5px;color:var(--ink-soft);margin-top:5px;line-height:1.5}
+.st-steps{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.st-steps span{font-family:var(--font-display);font-size:11.5px;color:var(--ink-mute);border:1.5px solid var(--well-line);border-radius:999px;padding:0 8px}
+.st-steps span.on{background:var(--plus);border-color:var(--frame);color:var(--panel)}
+.rd-grid{fill:none;stroke:var(--grid);stroke-width:1}
+.rd-base{fill:none;stroke:var(--potential);stroke-width:2;stroke-dasharray:5 4;stroke-linejoin:round}
+.rd-now{fill:var(--accent-fill);stroke:var(--accent);stroke-width:2.2;stroke-linejoin:round}
+.rd-dot{fill:var(--accent);stroke:var(--panel);stroke-width:1.5}
+.rd-lab{font-family:var(--font-display);font-size:12px;fill:var(--ink);text-anchor:middle}
+.legend .lg-now{background:var(--accent-fill);border:2px solid var(--accent)}
+.legend .lg-base{background:none;border:2px dashed var(--potential)}
+
 /* 어제 기록 정리 */
 .retro-row{display:grid;grid-template-columns:28px minmax(0,1fr) auto auto;gap:6px;align-items:center;min-height:54px;border-top:1.5px solid var(--well-line);padding-top:6px;margin-top:6px}
 .retro-n{font-family:var(--font-display);font-size:15.5px}

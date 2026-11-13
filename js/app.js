@@ -2,10 +2,12 @@
 import * as C from './core.js';
 import { createStore } from './store.js';
 import { createSync } from './sync.js';
-import { stripSvg, flowSvg, medSvg, peakSvg } from './chart.js';
+import { stripSvg, flowSvg, medSvg, peakSvg, radarSvg } from './chart.js';
 import * as PK from './pk.js';
+import * as GM from './game.js';
+import * as WX from './weather.js';
 
-const VERSION = '1.2';
+const VERSION = '1.3';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -109,21 +111,100 @@ function medCtx(key = viewKey()) {
   const P = profiles();
   if (P.length) {
     const items = C.activeItems(cfg(), key);
-    const doses = PK.dosesOf([getDay(C.addDays(key, -1)), getDay(key)], items, P);
+    const day = getDay(key), isToday_ = key === todayKey(), t = now();
+    const doses = PK.dosesOf([getDay(C.addDays(key, -1)), day], items, P);
     const today = doses.filter(d => d.date === key);
-    const day = getDay(key), wake = C.wakeOf(day), lo = C.dayStartTs(key, rollover());
+    // 예정 시각이 있는데 아직 안 먹은 약: "예정대로 먹으면"의 곡선 (오늘이면 지금보다 이르게 잡지 않는다)
+    const planned = [];
+    for (const it of items) {
+      if (!it.plan || !it.drugs?.length || !day) continue;
+      const ds = C.doseState(it, day, { now: t, rollover: rollover() });
+      if (!['upcoming', 'due', 'overdue'].includes(ds.kind)) continue;
+      const at = isToday_ ? Math.max(ds.due, t) : ds.due;
+      for (const l of it.drugs) {
+        const p = profileById(l.id);
+        if (p?.kind === 'curve') planned.push({ id: `plan:${it.id}:${p.id}`, item: it.id, name: it.name, t: at, due: ds.due, p, mg: +l.mg || +p.mg || 1, date: key, planned: true });
+      }
+    }
+    const wake = C.wakeOf(day), lo = C.dayStartTs(key, rollover());
     const t0 = Math.max(lo, Math.min(wake || lo + 4 * HOUR, today[0]?.t ?? Infinity) - 30 * MIN);
     const sleepAt = typicalSleepTs(key);
-    const ends = today.filter(d => d.p.kind === 'curve').map(d => PK.plan(d.p, d.t).end + 30 * MIN);
-    const t1 = Math.min(t0 + 24 * HOUR, Math.max(t0 + 16 * HOUR, ...ends, sleepAt ? sleepAt + 40 * MIN : 0, key === todayKey() ? now() + HOUR : 0));
-    const sr = PK.series(doses.filter(d => d.p.kind === 'curve'), t0, t1);
-    const groups = sr.groups.map(G => ({ ...G, ...PK.groupStatus(G, sr.ts, now()) })).filter(G => G.max);
-    v = { key, items, doses, today, ts: sr.ts, groups, t0, t1, sleepAt, wake };
+    const ends = [...today, ...planned].filter(d => d.p.kind === 'curve').map(d => PK.plan(d.p, d.t).end + 30 * MIN);
+    const t1 = Math.min(t0 + 24 * HOUR, Math.max(t0 + 16 * HOUR, ...ends, sleepAt ? sleepAt + 40 * MIN : 0, isToday_ ? t + HOUR : 0));
+    const curve = doses.filter(d => d.p.kind === 'curve');
+    const sr = PK.series(curve, t0, t1);
+    const byG = new Map();
+    for (const G of sr.groups) {
+      const st = PK.groupStatus(G, sr.ts, t);
+      if (st) byG.set(G.group, { ...G, ...st });
+    }
+    if (planned.length) {
+      const sp = PK.series([...curve, ...planned], t0, t1);
+      for (const H of sp.groups) {
+        const st = PK.groupStatus(H, sp.ts, t);
+        if (!st || !H.parts.some(P_ => P_.dose.planned)) continue;
+        const G = byG.get(H.group) || { group: H.group, name: H.name, total: new Float64Array(sr.ts.length), parts: [], max: 0, effect: [], peak: [], nowRel: 0, effRel: st.effRel };
+        Object.assign(G, { projTotal: H.total, projMax: st.max, projEffect: st.effect, projEffRel: st.effRel });
+        byG.set(H.group, G);
+      }
+    }
+    // 그래프 높이 기준: 실제와 예정 중 큰 쪽
+    const groups = [...byG.values()].map(G => {
+      const scale = Math.max(G.max || 0, G.projMax || 0);
+      return { ...G, scale, effRel: G.max ? (G.effRel * G.max) / scale : (G.projEffRel * G.projMax) / scale };
+    });
+    v = { key, items, doses, today, planned, ts: sr.ts, groups, t0, t1, sleepAt, wake };
   }
   medMemo = { k, v };
   return v;
 }
 const medBands = key => (medCtx(key)?.groups || []).flatMap(G => G.effect);
+const doseOpts = (key, extra = {}) => ({ now: now(), rollover: rollover(), ended: key < todayKey(), ...extra });
+const doseOf = (it, day) => C.doseState(it, day, doseOpts(day?.date || todayKey()));
+
+// 예정 있는 약의 결정 카드에 붙는 줄: 먹으면 / 건너뛰면 / 남은 핵심 / 최근 2주
+function doseLines(it, day, mc) {
+  const t = now(), lines = [], ds = doseOf(it, day);
+  const first = C.live(day).find(e => e.item !== it.id && itemById(e.item)?.cat === 'med');
+  if (first && ds.due) lines.push(`${nameOf(first.item).name} ${C.fmtTime(first.t)} → 예정 시각은 그 ${C.fmtDur((ds.due - first.t) / MIN)} 뒤`);
+  const curves = (it.drugs || []).map(l => profileById(l.id)).filter(p => p?.kind === 'curve');
+  if (mc && curves.length) {
+    const G = mc.groups.find(g => g.group === (curves[0].group || curves[0].id));
+    const takeAt = Math.max(t, ds.due || t);
+    const endIf = G?.projEffect?.length ? G.projEffect[G.projEffect.length - 1][1] : Math.max(...curves.map(p => PK.plan(p, takeAt).end));
+    const toSleep = end => {
+      if (!mc.sleepAt) return '';
+      const gap = (mc.sleepAt - end) / MIN;
+      return gap >= 60 ? ` · 잠(${C.fmtTime(mc.sleepAt)})까지 ${C.fmtDur(gap)}` : ` · 평소 잠(${C.fmtTime(mc.sleepAt)})과 겹쳐요`;
+    };
+    lines.push(`먹으면 · 효과 ~${C.fmtTime(endIf)}${toSleep(endIf)}`);
+    const endNo = G?.effect?.length ? G.effect[G.effect.length - 1][1] : null;
+    lines.push(endNo && endNo > t ? `건너뛰면 · 지금 약 효과 하루 최고의 ${Math.round((G.nowRel || 0) * 100)}% · ~${C.fmtTime(endNo)}에 끝나요` : '건너뛰면 · 지금은 남은 약 효과가 거의 없어요');
+  }
+  const open = C.top3Of(day).filter(x => !x.done);
+  if (open.length) lines.push(`남은 핵심 · ${open.map(x => x.text).join(', ')}`);
+  const sm = C.doseSummary(C.lastDays(C.addDays(todayKey(), -1), 14).map(k => C.doseState(it, getDay(k), doseOpts(k, { ended: true }))));
+  if (sm.taken + sm.skipped + sm.missed) lines.push(`최근 2주 · 먹음 ${sm.taken} · 건너뜀 ${sm.skipped}${sm.missed ? ` · 못 먹음 ${sm.missed}` : ''}`);
+  return lines;
+}
+
+// 상태 글자: 타일, 오늘 약 일정, 복용 기록이 같이 쓴다
+function doseText(ds, it) {
+  const verb = it.cat === 'med' ? '먹음' : '완료';
+  switch (ds.kind) {
+    case 'taken': return `${C.fmtTime(ds.t)} ${verb}${ds.delay != null ? ' · 제시간' : ''}`;
+    case 'late': return `${C.fmtTime(ds.t)} ${verb} · ${C.fmtDur(ds.delay)} 늦게`;
+    case 'early': return `${C.fmtTime(ds.t)} ${verb} · ${C.fmtDur(-ds.delay)} 일찍`;
+    case 'skipped': return `건너뜀${ds.why ? ` · ${C.SKIP_WHY[ds.why] || ds.why}` : ''}`;
+    case 'missed': return `못 ${it.cat === 'med' ? '먹음' : '함'}${ds.why ? ` · ${C.SKIP_WHY[ds.why] || ds.why}` : ''}`;
+    case 'upcoming': return `${C.fmtTime(ds.due)} 예정`;
+    case 'due': return `${C.fmtTime(ds.due)} 예정 · 지금`;
+    case 'overdue': return `${C.fmtTime(ds.due)} 예정 · ${C.fmtDur(ds.delay)} 지남`;
+    case 'waiting': return `${nameOf(it.plan.after).name} 먹고 ${it.plan.h || 0}시간 뒤`;
+    case 'none': return '기록 없음';
+    default: return '';
+  }
+}
 
 // ---------- 공통 조각 ----------
 
@@ -163,10 +244,35 @@ function syncLine() {
 
 // ---------- 머리와 HUD ----------
 
+// ---------- 날씨·해 (켜면 1시간마다 새로 받는다) ----------
+const wx = () => local().wx || {};
+let wxBusy = false;
+function wxEnsure(force) {
+  const W = wx();
+  if (!W.on || !W.loc || wxBusy || !navigator.onLine) return;
+  if (!force && W.data && now() - W.data.at < HOUR) return;
+  wxBusy = true;
+  WX.fetchWeather(W.loc, (u, o) => fetch(u, o), now())
+    .then(data => store.setLocal({ wx: { ...wx(), data } }))
+    .catch(() => {})
+    .finally(() => (wxBusy = false));
+}
+function wxLine(key) {
+  const W = wx();
+  if (!W.on || !W.data) return '';
+  const sun = WX.sunOf(W.data, key);
+  const d = WX.describe(W.data.code);
+  const parts = [];
+  if (key === todayKey() && W.data.temp != null) parts.push(`${d.icon} ${Math.round(W.data.temp)}°`);
+  if (sun) parts.push(now() < sun.set ? `일몰 ${C.fmtTime(sun.set)}` : `일출 ${C.fmtTime(sun.rise + 24 * HOUR)}`);
+  return parts.join(' · ');
+}
+
 function topHtml() {
   const key = viewKey(), day = store.day(key), today = isToday(), w = C.wakeOf(day);
   let sub = '오늘';
   if (today && w && now() > w) sub = `오늘 · 깨어난 지 ${C.fmtDur((now() - w) / MIN)}`;
+  if (today && wxLine(key)) sub += ` · ${wxLine(key)}`;
   if (!today) {
     const n = Math.round((C.keyToDate(todayKey()) - C.keyToDate(key)) / 86400000);
     sub = `${n === 1 ? '어제' : n + '일 전'} · 누르면 오늘로`;
@@ -177,11 +283,39 @@ function topHtml() {
     <button class="sync-btn" data-act="sync-open" aria-label="동기화 상태: ${esc(syncLine())}"><span class="sync-dot ${syncClass()}"></span></button>`;
 }
 
+// ---------- 레벨과 스탯 (기록에서 매번 다시 계산) ----------
+let gameMemo = { k: '' };
+function gameCtx() {
+  const tk = todayKey(), k = `${ver}|${tk}`;
+  if (gameMemo.k === k) return gameMemo.v;
+  const ledger = GM.expLedger(firstKey(), tk, getDay, cfg());
+  const def = store.game();
+  const stats = def ? GM.statsNow(def, { cfg: cfg(), days: allDays(), todayKey: tk, rollover: rollover() }) : [];
+  const sBonus = GM.statBonus(stats);
+  const total = ledger.reduce((a, r) => a + r.exp + r.bonus, 0) + sBonus;
+  const L = GM.levelOf(total);
+  // 레벨 기록: 누적이 문턱을 넘은 날 (스탯 보너스는 오늘에 더한다)
+  const ups = [];
+  let acc = 0, lv = 1;
+  ledger.forEach((r, i) => {
+    acc += r.exp + r.bonus + (i === ledger.length - 1 ? sBonus : 0);
+    while (acc >= GM.needFor(lv)) {
+      acc -= GM.needFor(lv);
+      lv++;
+      ups.push({ lv, key: r.key });
+    }
+  });
+  const today = ledger.find(r => r.key === tk) || { exp: 0, bonus: 0, why: [] };
+  const v = { ledger, def, stats, sBonus, total, L, tier: GM.tierOf(L.lv), ups, today };
+  gameMemo = { k, v };
+  return v;
+}
+
 function hudHtml() {
-  const tk = todayKey(), e = C.expOf(store.day(tk), cfg()), se = season(), ch = chainNow();
+  const g = gameCtx(), ch = chainNow(), e = g.today.exp, clear = e >= C.EXP_GOAL;
   const fire = ch.atRisk ? `🔥 ${ch.n}일 · 오늘 이어가기` : ch.n ? `🔥 ${ch.n}일 연속` : '🔥 오늘부터';
-  return `<div class="hud-in"><span class="hud-lv">${e >= C.EXP_GOAL ? 'CLEAR' : 'TODAY'}</span><span class="hud-name ${ch.atRisk ? 'risk' : ''}">${fire}</span><span class="hud-max">시즌 ${se.n} · ${se.left ? 'D-' + se.left : '마지막 날'}</span></div>
-    <div class="hud-exp"><i style="width:${Math.min(100, e)}%"></i><span>오늘 EXP <b>${e}</b> / ${C.EXP_GOAL}</span></div>`;
+  return `<div class="hud-in"><span class="hud-lv">Lv.<b>${g.L.lv}</b></span><span class="hud-name">${esc(g.tier.name)}</span><span class="hud-chip ${clear ? 'clear' : ''}">${clear ? `오늘 ${e} · CLEAR +${GM.CLEAR_BONUS}` : `오늘 ${e}/${C.EXP_GOAL}`}</span><span class="hud-max ${ch.atRisk ? 'risk' : ''}">${fire}</span></div>
+    <div class="hud-exp"><i style="width:${((g.L.into / g.L.need) * 100).toFixed(1)}%"></i><span>EXP <b>${g.L.into}</b> / ${g.L.need} · 다음 레벨까지 <b>${g.L.need - g.L.into}</b></span></div>`;
 }
 
 // ---------- 오늘 탭 ----------
@@ -206,7 +340,7 @@ function retroHtml() {
   if (yk < firstKey() || local().seen['retro:' + yk]) return '';
   const list = C.retroItems(store.day(yk), cfg());
   if (!list.length) return '';
-  const rows = list.map(it => `<div class="retro-row"><span class="row-ic">${esc(it.icon)}</span><span class="retro-n">${esc(it.name)}</span><button class="btn sm pri" data-act="retro-yes" data-arg="${esc(it.id)}">${it.cat === 'med' ? '먹었어요' : '했어요'}</button><button class="btn sm" data-act="retro-no" data-arg="${esc(it.id)}">못 했어요</button></div>`).join('');
+  const rows = list.map(it => `<div class="retro-row"><span class="row-ic">${esc(it.icon)}</span><span class="retro-n">${esc(it.name)}</span><button class="btn sm pri" data-act="retro-yes" data-arg="${esc(it.id)}">${it.cat === 'med' ? '먹었어요' : '했어요'}</button><button class="btn sm" data-act="retro-no" data-arg="${esc(it.id)}">${it.cat === 'med' ? '안 먹었어요' : '못 했어요'}</button></div>`).join('');
   return win('어제 기록 정리', 'YESTERDAY', `<p class="lead">어제 체크 안 된 필수예요. 했는데 기록만 못 했다면 눌러 주세요. 평소 시각으로 들어가고, 바로 고칠 수 있어요.</p>${rows}`, '', `<button class="icon-btn" data-act="retro-close" aria-label="어제 기록 정리 닫기">${IC.x}</button>`);
 }
 
@@ -214,7 +348,18 @@ function stripHtml(day, today) {
   const w = C.wakeOf(day), sl = C.sleepOf(day), p = C.progress(day, cfg());
   const end = sl ? '🌙 ' + C.fmtTime(sl) : w ? '~' + C.fmtTime(w + C.AWAKE_HOURS * HOUR) : '';
   return `<section class="win"><button class="strip-btn" data-act="tab" data-arg="flow" aria-label="오늘 흐름 자세히 보기">${stripSvg(day, cfg(), now(), today, medBands(day.date))}
-    <span class="strip-meta"><span>${w ? '☀️ ' + C.fmtTime(w) : '기상 기록 없음'}</span><span>필수 <b>${p.essDone}/${p.essTotal}</b> · 전체 <b>${p.done}/${p.total}</b></span><span>${end}</span></span></button></section>`;
+    <span class="strip-meta"><span>${w ? '☀️ ' + C.fmtTime(w) : '기상 기록 없음'}</span><span>필수 <b>${p.essDone}/${p.essTotal}</b> · 전체 <b>${p.done}/${p.total}</b></span><span>${end}</span></span></button>${doseChipsHtml(day)}</section>`;
+}
+
+// 오늘 약 일정: 약 항목마다 먹음·예정·건너뜀을 한 줄로 (누르면 시각을 정해 기록하는 창)
+function doseChipsHtml(day) {
+  const meds = C.activeItems(cfg(), day.date).filter(i => i.cat === 'med' && i.type === 'check');
+  if (!meds.length) return '';
+  return `<div class="dose-chips">${meds.map(it => {
+    const ds = doseOf(it, day);
+    const txt = doseText(ds, it) || '아직';
+    return `<button class="dose-chip k-${ds.kind}" data-act="tile-menu" data-arg="${esc(it.id)}"><span>${esc(it.icon)} ${esc(it.name)}</span><b>${esc(txt)}</b></button>`;
+  }).join('')}</div>`;
 }
 
 function coachList(day) {
@@ -262,9 +407,22 @@ function coachList(day) {
       if (s.key.startsWith('meal:') && mc.groups.some(G => G.nowRel >= PK.EFFECT && G.parts.some(P => P.dose.p.appetite))) s.sub += ' · 약 효과 중엔 배고픔을 덜 느낄 수 있어요';
     }
   }
+  // 예정 시각이 있는 약: 먹으면/건너뛰면을 같이 보여준다
+  for (const s of list) if (s.key.startsWith('dose:')) s.lines = doseLines(itemById(s.key.slice(5)), day, mc);
   const se = season();
   if (se.left === 0 && !sn('season')) extra.push({ pri: 38, key: 'season', icon: '🏁', tone: 'now', title: `시즌 ${se.n} 마지막 날이에요`, sub: '2주 결과를 확인하고 보고해요', action: { label: '결과 보기', act: 'tab', arg: 'week' } });
   if (!l.seen.setup && !sn('setup')) extra.push({ pri: 50, key: 'setup', icon: '🛠️', tone: 'calm', title: '기본 항목을 내 루틴으로 바꿔요', sub: '약 이름, 시간대, 필수 여부를 설정에서 고칠 수 있어요', action: { label: '설정 열기', act: 'tab', arg: 'set' }, alt: { label: '괜찮아요', act: 'seen', arg: 'setup' } });
+  // 아침 햇빛: 일어나고 3시간 안, 해가 떠 있고, 비·눈이 아닐 때 (아침 빛은 밤에 졸음이 오는 시각을 앞당긴다)
+  const W = wx(), sun = W.on && W.data ? WX.sunOf(W.data, tk) : null, t = now(), wk = C.wakeOf(day);
+  if (sun && wk && t - wk < 3 * HOUR && t > sun.rise && t < sun.set - HOUR && !WX.isWet(W.data) && !sn('sun')) {
+    const walk = C.activeItems(cfg(), tk).find(i => i.id === 'walk' || i.name.includes('산책'));
+    const walked = walk && C.itemState(day, walk).count;
+    if (!walked) {
+      const d = WX.describe(W.data.code);
+      extra.push({ pri: 33, key: 'sun', icon: '☀️', tone: 'calm', title: '아침 햇빛 10분 어때요?', sub: `지금 ${d.text} ${Math.round(W.data.temp)}°, 일몰 ${C.fmtTime(sun.set)}. 아침 빛을 보면 밤에 졸음이 오는 시각이 앞당겨져요`, action: walk ? { label: `${walk.name} 기록`, act: 'tile', arg: walk.id } : null });
+    }
+  }
+  if (W.on && W.data && WX.isWet(W.data)) for (const s of list) if (s.key === 'do:walk') s.sub += ' · 지금 비·눈이 와요. 실내 스트레칭으로 바꿔도 좋아요';
   if (!l.gh && !l.seen.backup && !sn('backup') && allDays().length >= 2) extra.push({ pri: 52, key: 'backup', icon: '☁️', tone: 'calm', title: '기록을 비공개 저장소에 백업해요', sub: '폰을 바꾸거나 브라우저 데이터를 지워도 남아요', action: { label: '연결하기', act: 'sync-open' }, alt: { label: '괜찮아요', act: 'seen', arg: 'backup' } });
   const out = [...list.filter(s => s.key !== 'clear'), ...extra].sort((a, b) => a.pri - b.pri);
   return out.length ? out : list;
@@ -274,9 +432,11 @@ function coachHtml(day) {
   const btns = [];
   if (s.action) btns.push(`<button class="btn pri" data-act="coach" data-arg="action">${esc(s.action.label)}</button>`);
   if (s.alt) btns.push(`<button class="btn" data-act="coach" data-arg="alt">${esc(s.alt.label)}</button>`);
+  if (s.alt2) btns.push(`<button class="btn" data-act="coach" data-arg="alt2">${esc(s.alt2.label)}</button>`);
   if (!['clear', 'closed', 'start'].includes(s.key)) btns.push('<button class="btn ghost" data-act="coach-later">나중에</button>');
   const scale = s.scale ? `<div class="scale-dots coach-scale" role="group" aria-label="${esc(C.SPECIAL[s.scale]?.name || '')} 1부터 5">${[1, 2, 3, 4, 5].map(n => `<button class="dot" data-act="cond" data-arg="${s.scale}:${n}">${n}</button>`).join('')}</div>` : '';
-  return `<section class="win coach tone-${s.tone}"><div class="say">${MOCHI}<div><b>${esc(s.icon)} ${esc(s.title)}</b><p>${esc(s.sub || '')}</p></div></div>${scale}${btns.length ? `<div class="row-btns">${btns.join('')}</div>` : ''}</section>`;
+  const lines = s.lines?.length ? `<ul class="coach-lines">${s.lines.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
+  return `<section class="win coach tone-${s.tone}"><div class="say">${MOCHI}<div><b>${esc(s.icon)} ${esc(s.title)}</b><p>${esc(s.sub || '')}</p></div></div>${lines}${scale}${btns.length ? `<div class="row-btns">${btns.join('')}</div>` : ''}</section>`;
 }
 
 function top3Html(day) {
@@ -289,10 +449,12 @@ function top3Html(day) {
   return win('오늘의 핵심 3가지', 'TOP 3', rows.join(''), '', set.length ? `<span class="win-count">${set.filter(t => t.done).length}/${set.length}</span>` : '');
 }
 
-function tileHtml(it, s, { carried, later, today }) {
+function tileHtml(it, s, { carried, later, today, day }) {
   const exp = C.itemExp(it);
   let sub;
-  if (it.type === 'check') sub = s.done ? `${C.fmtTime(s.last)} 완료` : s.skipped ? '오늘은 건너뜀' : carried ? `${C.BLOCK_NAMES[it.block]}에서 넘어옴` : it.cue || (it.essential ? '필수' : C.BLOCK_NAMES[it.block]);
+  const ds = it.type === 'check' && (it.plan || s.skipped || s.missed) && day ? doseOf(it, day) : null;
+  if (ds && (it.plan || ds.kind === 'skipped' || ds.kind === 'missed')) sub = doseText(ds, it) || it.cue || '';
+  else if (it.type === 'check') sub = s.done ? `${C.fmtTime(s.last)} ${it.cat === 'med' ? '먹음' : '완료'}` : carried ? `${C.BLOCK_NAMES[it.block]}에서 넘어옴` : it.cue || (it.essential ? '필수' : C.BLOCK_NAMES[it.block]);
   else if (it.type === 'count') sub = (it.target ? `${s.count}/${it.target}${it.unit || ''}` : `${s.count}${it.unit || '번'}`) + (s.last ? ` · ${today ? C.ago(s.last, now()) : C.fmtTime(s.last)}` : '');
   else if (!s.count) sub = '눌러서 기록';
   else if (it.ask === 'min') sub = `${C.fmtDur(s.sum)} · ${s.count}번`;
@@ -307,7 +469,7 @@ function tileHtml(it, s, { carried, later, today }) {
   const goal =it.goal?.total ? `<span class="tile-goal">누적 ${C.goalCount(it, allDays())}/${it.goal.total}</span>` : '';
   const bar = it.type === 'count' && it.target ? `<span class="mini-bar"><i style="width:${Math.min(100, Math.round((s.count / it.target) * 100))}%"></i></span>` : '';
   const mark = it.type === 'check' ? `<span class="box">${IC.check}</span>` : `<span class="plus">${IC.plus}</span>`;
-  const cls = ['tile', s.done && 'is-done', s.skipped && 'is-skip', later && 'is-later', ui.just === it.id && 'pop'].filter(Boolean).join(' ');
+  const cls = ['tile', s.done && 'is-done', (s.skipped || (s.missed && !s.done)) && 'is-skip', later && 'is-later', ds?.kind === 'due' || ds?.kind === 'overdue' ? 'is-due' : '', ui.just === it.id && 'pop'].filter(Boolean).join(' ');
   return `<button class="${cls}" data-act="tile" data-arg="${esc(it.id)}" data-hold="tile-menu" aria-pressed="${!!s.done}">
     <span class="tile-top"><span class="tile-ic" aria-hidden="true">${esc(it.icon || '⭐')}</span><span class="tile-badges">${fire}${exp ? `<span class="q-reward">+${exp}</span>` : ''}</span></span>
     <span class="tile-name">${esc(it.name)}</span><span class="tile-sub">${esc(sub)}</span>${goal}${bar}${mark}</button>`;
@@ -316,18 +478,23 @@ function tileHtml(it, s, { carried, later, today }) {
 function tilesHtml(day, items, today) {
   const cur = today ? C.blockAt(day, now()) : 'night', ci = C.blockIdx(cur), lite = C.isLite(day);
   const nowL = [], any = [], done = [], later = new Map();
+  const toLater = (it, s) => {
+    if (!later.has(it.block)) later.set(it.block, []);
+    later.get(it.block).push([it, s]);
+  };
   for (const it of items) {
     const s = C.itemState(day, it);
     if (lite && it.type === 'check' && !it.essential && !s.done) continue;
-    if (it.type === 'check' && (s.done || s.skipped)) done.push([it, s]);
+    // 예정 시각이 있는 항목은 시간대가 아니라 예정 시각으로 자리를 정한다 (1시간 전부터 "지금")
+    const ds = today && it.plan && it.type === 'check' ? doseOf(it, day) : null;
+    if (it.type === 'check' && (s.done || s.skipped || s.missed)) done.push([it, s]);
+    else if (ds && (ds.kind === 'waiting' || (ds.kind === 'upcoming' && ds.due - now() > HOUR))) toLater(it, s);
+    else if (ds) nowL.push([it, s, false]);
     else if (it.block === 'any') any.push([it, s]);
     else if (C.blockIdx(it.block) <= ci) nowL.push([it, s, C.blockIdx(it.block) < ci]);
-    else {
-      if (!later.has(it.block)) later.set(it.block, []);
-      later.get(it.block).push([it, s]);
-    }
+    else toLater(it, s);
   }
-  const grid = (list, opt = {}) => `<div class="grid">${list.map(([it, s, carried]) => tileHtml(it, s, { carried, today, ...opt })).join('')}</div>`;
+  const grid = (list, opt = {}) => `<div class="grid">${list.map(([it, s, carried]) => tileHtml(it, s, { carried, today, day, ...opt })).join('')}</div>`;
   const liteBtn = today ? `<button class="mini-toggle ${lite ? 'on' : ''}" data-act="lite" data-arg="${lite ? 0 : 1}" aria-pressed="${lite}">가볍게</button>` : '';
   const tip = today && !local().seen.hold ? '<p class="hint">체크한 타일을 누르면 시각을 고칠 수 있어요. 길게 누르면 지난 시각으로 기록하거나 건너뛰어요. <button class="link" data-act="seen" data-arg="hold">알겠어요</button></p>' : '';
   let h = win(today ? `지금 · ${C.BLOCK_NAMES[cur]}` : '루틴', today ? 'NOW' : 'DAY', (nowL.length ? grid(nowL) : `<p class="empty">${lite ? '필수 항목은 다 했어요.' : '지금 할 것은 다 했어요.'}</p>`) + tip, '', liteBtn);
@@ -419,11 +586,51 @@ function seasonDays() {
   return { se, stats: C.seasonStats(keys.map(getDay), cfg()) };
 }
 
+// ---------- 성장 탭: 레벨, 스탯(개선 지도), 시즌, 주간 ----------
+
+const fmtNum = v => (Number.isInteger(v) ? String(v) : (Math.round(v * 10) / 10).toString());
+
+function levelCardHtml(g) {
+  const t = g.tier, pct = ((g.L.into / g.L.need) * 100).toFixed(1);
+  const why = [`오늘 기록 +${g.today.exp}`, ...g.today.why].join(' · ');
+  const ups = g.ups.slice(-5).reverse().map(u => `<li><b>Lv.${u.lv}</b> ${C.fmtDate(u.key)}</li>`).join('');
+  return win('레벨', 'LEVEL', `<div class="lv-top"><span class="lv-now">Lv.<b>${g.L.lv}</b></span><span class="lv-meta"><span class="tier-pill">${esc(t.name)}</span><span>${t.next ? `${esc(t.next.name)}까지 Lv.${t.next.min}` : '가장 높은 등급'}</span><span>누적 ${g.total.toLocaleString()} EXP</span></span></div>
+    <div class="tiers">${GM.TIERS.map((x, i) => `<span class="${i === t.i ? 'on' : ''}">${esc(x.name)}</span>`).join('')}</div>
+    <div class="track lv-track"><i class="fill" style="width:${pct}%"></i></div>
+    <p class="muted">다음 레벨까지 ${g.L.need - g.L.into} EXP · ${esc(why)}</p>
+    <details><summary>EXP 얻는 법</summary><ul class="med-ul"><li>필수 체크 +30, 다른 체크 +15, 횟수 하나 +4, 기록 하나 +10</li><li>기상 +10, 집중 2.5분마다 +1 (하루 60까지), 컨디션 +3, 핵심 완료 +20, 하루 마감 +20</li><li>하루 100을 넘기면 +${GM.CLEAR_BONUS}, 연속 7·14·30·60·100일에 +50~500</li><li>스탯 목표를 하나 채울 때마다 +${GM.STEP_BONUS}</li><li>레벨마다 필요한 EXP는 조금씩 늘어요 (지금 ${g.L.need})</li></ul></details>
+    ${ups ? `<h3 class="sub-h">레벨 기록</h3><ul class="lv-ups">${ups}</ul>` : ''}`);
+}
+
+function statCardHtml(s) {
+  const up = s.grade !== s.base, unit = s.metric?.unit || '';
+  const val = s.value == null ? '' : `${fmtNum(s.value)}${unit}`;
+  let body;
+  if (s.keep) body = `<p class="st-note">${esc(s.note || '지금 강점이에요. 유지만 해요')}</p>`;
+  else if (s.missing) body = `<p class="st-note">이 스탯을 셀 항목이 아직 없어요.</p><div class="row-btns"><button class="btn sm pri" data-act="stat-add" data-arg="${esc(s.id)}">${esc(s.add?.name || '항목')} 항목 만들기</button></div>`;
+  else {
+    body = `<div class="st-prog"><span class="mini-bar"><i style="width:${Math.round(s.pct * 100)}%"></i></span><span>${s.next ? `${esc(val || '0' + unit)} / ${esc(fmtNum(s.next.at) + unit)} → <b>${esc(s.next.grade)}</b>` : `${esc(val)} · 목표 다 채움`}</span></div>`;
+    if (s.note) body += `<p class="st-note">${esc(s.note)}</p>`;
+  }
+  const steps = !s.keep && s.steps.length ? `<div class="st-steps">${s.steps.map(x => `<span class="${x.done ? 'on' : ''}">${esc(x.label || fmtNum(x.at) + unit)} ${esc(x.grade)}</span>`).join('')}</div>` : '';
+  return `<div class="st-card ${s.keep ? 'keep' : ''}"><div class="st-head"><span class="st-ic" aria-hidden="true">${esc(s.icon || '')}</span><b>${esc(s.name)}</b><span class="grade ${up ? 'up' : ''}">${up ? `<s>${esc(s.base)}</s>` : ''}${esc(s.grade)}</span></div>${body}${steps}</div>`;
+}
+
+function statsHtml(g) {
+  if (!g.def) return win('스탯', 'STAT', '<p class="lead">스탯 정의가 아직 없어요. 비공개 저장소에 game.json이 있으면 동기화할 때 받아와요.</p>');
+  const keyStat = g.stats.find(s => s.key) || null;
+  return win(esc(g.def.title || '스탯'), 'STAT', `${g.def.lead ? `<p class="lead">${esc(g.def.lead)}</p>` : ''}${radarSvg(g.stats.map(s => ({ name: s.name, now: GM.gradeScore(s.grade), base: GM.gradeScore(s.base) })))}
+    <div class="legend"><span><i class="lg-now"></i>지금</span><span><i class="lg-base"></i>처음 평가</span></div>
+    ${keyStat ? `<p class="st-key">${esc(keyStat.keyNote || '')}</p>` : ''}${g.stats.map(statCardHtml).join('')}`);
+}
+
 function weekHtml() {
   const tk = todayKey(), c = cfg();
   const k7 = C.lastDays(tk, 7), d7 = k7.map(getDay), s = C.summarize(d7, c);
   const { se, stats: ss } = seasonDays();
-  let h = win(`시즌 ${se.n}`, 'SEASON', `<div class="goal-h"><span>${C.SEASON_DAYS}일 중 <b>${se.day}일째</b></span><span>${se.left ? `${C.fmtDate(se.end)}까지 · <b>D-${se.left}</b>` : '<b>오늘이 마지막 날</b>'}</span></div>
+  const g = gameCtx();
+  let h = levelCardHtml(g) + statsHtml(g);
+  h += win(`시즌 ${se.n}`, 'SEASON', `<div class="goal-h"><span>${C.SEASON_DAYS}일 중 <b>${se.day}일째</b></span><span>${se.left ? `${C.fmtDate(se.end)}까지 · <b>D-${se.left}</b>` : '<b>오늘이 마지막 날</b>'}</span></div>
     <span class="mini-bar"><i class="blue" style="width:${Math.round((se.day / C.SEASON_DAYS) * 100)}%"></i></span>
     <div class="minis" style="margin-top:10px">${mini('기록한 날', ss.recorded, '일')}${mini('필수 달성', ss.essDays, '일')}${mini('CLEAR', ss.clearDays, '일')}</div>
     <div class="row-btns"><button class="btn pri" data-act="report-season">시즌 보고하기</button><span class="muted grow-r">누적 ${ss.exp} EXP</span></div>`);
@@ -502,6 +709,7 @@ function medHtml() {
   let h = DISCLAIM;
   if (unlinked.length) h += medLinkHtml(unlinked, mc.items);
   h += medGraphHtml(mc, today, P, linked);
+  h += medTrackHtml(key);
   const curves = P.filter(p => p.kind === 'curve' && linked.has(p.id));
   if (curves.length) h += medPlanHtml(mc, curves);
   h += medPeakHtml(key);
@@ -533,7 +741,9 @@ function medGraphHtml(mc, today, P, linked) {
   });
   const ratings = C.live(getDay(mc.key) || C.newDay(mc.key)).filter(e => e.item === 'attn').map(e => ({ t: e.t, v: e.v }));
   const doses = curveDoses.map(d => ({ t: d.t, label: `${C.fmtTime(d.t)} ${d.p.name}` }));
-  const svg = medSvg({ ...mc, doses, steady, ratings, now: now(), isToday: today });
+  const seenPlan = new Set();
+  const plannedDoses = mc.planned.filter(d => !seenPlan.has(d.item) && seenPlan.add(d.item)).map(d => ({ t: d.t, label: `${C.fmtTime(d.t)} ${d.name} 예정` }));
+  const svg = medSvg({ ...mc, doses, plannedDoses, steady, ratings, now: now(), isToday: today });
   const lines = mc.groups.map(G => {
     let line = `<b>${esc(G.name)}</b> 효과 ${G.effect.map(span2).join(', ') || '없음'} · 가장 높음 ${G.peak.map(span2).join(', ') || '없음'}`;
     if (today) {
@@ -543,16 +753,71 @@ function medGraphHtml(mc, today, P, linked) {
       const trend = G.nowRel < 0.05 ? '거의 없어요' : b > a * 1.03 ? '오르는 중' : b < a * 0.97 ? '내려가는 중' : '비슷하게 유지';
       line += `<br>지금 하루 최고의 ${Math.round(G.nowRel * 100)}% · ${trend}`;
     }
-    const end = G.effect.length ? G.effect[G.effect.length - 1][1] : null;
-    if (end && mc.sleepAt) {
+    const toSleep = end => {
+      if (!mc.sleepAt) return '';
       const gap = (mc.sleepAt - end) / MIN;
-      line += gap >= 60 ? `<br>효과 끝 ${C.fmtTime(end)} → 평소 잠드는 ${C.fmtTime(mc.sleepAt)}까지 ${C.fmtDur(gap)} 여유` : `<br><span class="warn">효과 끝 ${C.fmtTime(end)}이 평소 잠드는 ${C.fmtTime(mc.sleepAt)}에 가까워요. 잠이 늦어질 수 있어요</span>`;
+      return gap >= 60 ? ` → 평소 잠드는 ${C.fmtTime(mc.sleepAt)}까지 ${C.fmtDur(gap)} 여유` : ` → <span class="warn">평소 잠드는 ${C.fmtTime(mc.sleepAt)}에 가까워요. 잠이 늦어질 수 있어요</span>`;
+    };
+    const end = G.effect.length ? G.effect[G.effect.length - 1][1] : null;
+    if (end) line += `<br>${G.projEffect ? '지금까지 먹은 것만: ' : ''}효과 끝 ${C.fmtTime(end)}${toSleep(end)}`;
+    if (G.projEffect?.length) {
+      const pe = G.projEffect[G.projEffect.length - 1][1];
+      line += `<br>예정대로 먹으면: 효과 끝 ${C.fmtTime(pe)}${toSleep(pe)}`;
     }
     return `<p class="med-note">${line}</p>`;
   });
   if (!mc.groups.length) lines.push(`<p class="muted">${today ? '오늘' : '이날'} 기록된 곡선형 약이 없어요. 연결한 약 타일을 누르면 여기 그려져요.</p>`);
-  const legend = '<div class="legend med-legend"><span><i class="lg-area"></i>약 농도 (같은 성분은 더함)</span><span><i class="lg-eff"></i>효과 구간 (한 번 먹은 최고점의 35%↑)</span><span><i class="lg-peak"></i>하루 중 가장 높음 (80%↑)</span><span><i class="lg-rate"></i>내가 누른 집중도</span></div>';
+  const legend = `<div class="legend med-legend"><span><i class="lg-area"></i>약 농도 (같은 성분은 더함)</span>${mc.planned.length ? '<span><i class="lg-proj"></i>예정대로 먹으면</span>' : ''}<span><i class="lg-eff"></i>효과 구간 (한 번 먹은 최고점의 35%↑)</span><span><i class="lg-peak"></i>하루 중 가장 높음 (80%↑)</span><span><i class="lg-rate"></i>내가 누른 집중도</span></div>`;
   return win(`${today ? '오늘' : C.fmtDate(mc.key)} 약 효과`, 'CURVE', svg + legend + lines.join(''));
+}
+
+const planLabel = it => {
+  const p = it.plan || {};
+  if (p.time) return `${p.time} 예정`;
+  if (p.wake != null) return `일어나고 ${p.wake}시간 뒤`;
+  if (p.after) return `${nameOf(p.after).name} 먹고 ${p.h || 0}시간 뒤`;
+  return '';
+};
+const relToClock = rel => C.fmtMinutesOfDay(((rel + rollover() * 60) % 1440 + 1440) % 1440);
+
+// 복용 기록: 최근 14일 칸, 제시간·늦음·건너뜀(이유) 요약, 예정 있는 약은 먹은 날·건너뛴 날 비교
+function medTrackHtml(key) {
+  const items = C.activeItems(cfg(), key).filter(i => i.cat === 'med' && i.type === 'check');
+  if (!items.length) return '';
+  const keys = C.lastDays(key, 14), tk = todayKey();
+  const head = `<div class="tr-grid tr-head">${keys.map(k => `<span>${'일월화수목금토'[C.keyToDate(k).getDay()]}</span>`).join('')}</div>`;
+  const SYM = { taken: '✓', late: '✓', early: '✓', skipped: '↷', missed: '✕', none: '·', due: '!', overdue: '!' };
+  const rows = items.map(it => {
+    const hist = keys.map(k => ({ k, has: !!getDay(k), ...C.doseState(it, getDay(k), doseOpts(k)) }));
+    const cells = hist.map(h => {
+      const kind = h.has ? h.kind : 'nodoc';
+      const label = `${C.fmtDate(h.k)} · ${h.has ? doseText(h, it) || '아직' : '앱을 안 연 날'}`;
+      return `<span class="tr-c k-${kind}" title="${esc(label)}" aria-label="${esc(label)}">${h.has ? SYM[h.kind] || '' : ''}</span>`;
+    }).join('');
+    const sm = C.doseSummary(hist.filter(h => h.k < tk && h.has));
+    const whys = Object.entries(sm.why).map(([w, n]) => `${C.SKIP_WHY[w] || w} ${n}`).join(', ');
+    const parts = [`제시간 ${sm.onTime}`];
+    if (sm.late) parts.push(`늦게 ${sm.late}${sm.lateAvg ? ` (평균 ${C.fmtDur(sm.lateAvg)})` : ''}`);
+    if (sm.early) parts.push(`일찍 ${sm.early}`);
+    parts.push(`건너뜀 ${sm.skipped}`);
+    if (sm.missed) parts.push(`못 먹음 ${sm.missed}`);
+    if (sm.none) parts.push(`기록 없음 ${sm.none}`);
+    let cmp = '';
+    if (it.plan) {
+      const o = C.doseOutcomes(it, C.lastDays(key, 28).map(getDay), { rollover: rollover() });
+      const f = (v, d = 1) => (v == null ? '–' : v.toFixed(d));
+      if (o.taken.n >= 2 && o.skipped.n >= 2) {
+        cmp = `<table class="cmp"><tr><th></th><th>먹은 날 ${o.taken.n}</th><th>건너뛴 날 ${o.skipped.n}</th></tr>
+          <tr><td>예정 뒤 6시간 집중도</td><td>${f(o.taken.attn)}</td><td>${f(o.skipped.attn)}</td></tr>
+          <tr><td>잠든 시각</td><td>${o.taken.sleep == null ? '–' : relToClock(o.taken.sleep)}</td><td>${o.skipped.sleep == null ? '–' : relToClock(o.skipped.sleep)}</td></tr>
+          <tr><td>핵심 완료율</td><td>${o.taken.t3 == null ? '–' : Math.round(o.taken.t3 * 100) + '%'}</td><td>${o.skipped.t3 == null ? '–' : Math.round(o.skipped.t3 * 100) + '%'}</td></tr></table>`;
+      } else cmp = `<p class="muted">먹은 날과 건너뛴 날이 각각 2일 넘게 모이면, 그날 오후 집중도·잠든 시각·핵심 완료율을 나란히 비교해 보여줘요. (지금 먹은 날 ${o.taken.n}, 건너뛴 날 ${o.skipped.n})</p>`;
+    }
+    return `<div class="tr-row"><div class="tr-name">${esc(it.icon)} ${esc(it.name)}${it.plan ? ` <small>${esc(planLabel(it))}</small>` : ''}</div><div class="tr-grid">${cells}</div>
+      <p class="tr-sum">최근 14일 · ${parts.join(' · ')}${whys ? `<br>이유 · ${esc(whys)}` : ''}</p>${cmp}</div>`;
+  }).join('');
+  const legend = '<div class="legend tr-legend"><span><i class="k-taken">✓</i>먹음</span><span><i class="k-late">✓</i>늦게</span><span><i class="k-skipped">↷</i>건너뜀</span><span><i class="k-missed">✕</i>못 먹음</span><span><i class="k-none">·</i>기록 없음</span></div>';
+  return win('복용 기록', 'DOSE', head + rows + legend);
 }
 
 function medPlanHtml(mc, curves) {
@@ -625,6 +890,9 @@ function setHtml() {
     <div class="row-btns">${l.gh ? '<button class="btn pri" data-act="sync-now">지금 동기화</button><button class="btn" data-act="sync-open">연결 설정</button>' : '<button class="btn pri" data-act="sync-open">비공개 저장소 연결</button>'}</div>`);
 
   const places = (c.places || []).filter(p => !p.del);
+  const W = wx();
+  h += win('날씨·햇빛', 'SKY', `<div class="set-row"><span>날씨와 해 뜨고 지는 시각<small>아침 햇빛을 권하고, 비 오는 날엔 산책 대신 실내를 권해요. Open-Meteo에 위치(약 10km 단위)만 보내요</small></span><button class="mini-toggle ${W.on ? 'on' : ''}" data-act="wx-toggle" aria-pressed="${!!W.on}">${W.on ? '켜짐' : '꺼짐'}</button></div>
+    ${W.on ? `<div class="set-row"><span>${W.loc ? `📍 ${esc(W.loc.name)}` : '위치를 정해 주세요'}${W.data ? `<small>${esc(wxLine(todayKey()))} · ${C.fmtTime(W.data.at)}에 받음</small>` : ''}</span><button class="btn sm" data-act="wx-loc">위치 정하기</button></div>` : ''}`);
   h += win('위치', 'PLACE', `<div class="set-row"><span>기록할 때 장소 남기기<small>앱을 열고 기록을 누른 순간의 위치만 저장해요</small></span><button class="mini-toggle ${l.loc ? 'on' : ''}" data-act="loc-toggle" aria-pressed="${!!l.loc}">${l.loc ? '켜짐' : '꺼짐'}</button></div>
     ${places.map(p => `<div class="set-row"><span>📍 ${esc(p.name)}</span><button class="btn sm danger" data-act="place-del" data-arg="${esc(p.id)}">삭제</button></div>`).join('')}
     ${l.loc ? '<div class="row-btns"><button class="btn" data-act="place-add">지금 위치를 장소로 저장</button></div>' : ''}`);
@@ -674,8 +942,9 @@ function toast(msg, action) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (el.hidden = true), action ? 5200 : 2600);
 }
-function burst() {
+function burst(text = 'CLEAR!') {
   const el = $('#burst');
+  el.textContent = text;
   el.classList.remove('go');
   void el.offsetWidth;
   el.classList.add('go');
@@ -790,7 +1059,7 @@ function openTileSheet(id) {
   const evRows = s.evs.map(e => `<button class="row no-ic" data-act="ev" data-arg="${e.id}"><span class="row-t">${C.fmtTime(e.t)}</span><span class="row-b">${esc(evDetail(e, it) || '기록')}</span><span class="row-go">${IC.right}</span></button>`).join('');
   const body = `${twHtml(key, def, presets)}<div class="row-btns"><button class="btn pri" data-act="add-tw">이 시각으로 기록</button></div>
     ${evRows ? `<h3 class="sub-h">${today ? '오늘' : '이날'} 기록</h3><div class="log">${evRows}</div>` : ''}
-    <div class="row-btns">${it.type === 'check' && !s.done ? `<button class="btn" data-act="skip">${s.skipped ? '건너뛰기 취소' : '오늘은 건너뛰기'}</button>` : ''}<button class="btn ghost" data-act="edit-item">항목 편집</button></div>`;
+    <div class="row-btns">${it.type === 'check' && !s.done ? `<button class="btn" data-act="skip">${s.skipped || s.missed ? '건너뛰기 취소' : today ? '오늘은 건너뛰기' : '이날은 건너뜀'}</button>` : ''}<button class="btn ghost" data-act="edit-item">항목 편집</button></div>`;
   openSheet(`${it.icon} ${it.name} · 언제 했어요?`, 'QUEST', body, {
     'add-tw'() {
       const t = tw.t;
@@ -798,8 +1067,11 @@ function openTileSheet(id) {
       addAt(it, key, t);
     },
     skip() {
-      store.setSkip(key, it.id, !s.skipped);
-      closeSheet();
+      if (s.skipped || s.missed || it.cat !== 'med') {
+        store.setSkip(key, it.id, !(s.skipped || s.missed));
+        return closeSheet();
+      }
+      openSkipSheet(it.id, key);
     },
     'edit-item'() {
       openItemSheet(it.id);
@@ -943,6 +1215,45 @@ function readDrugLinks() {
   return out.length ? out : undefined;
 }
 
+// 약을 건너뛸 때 이유를 받는다. "깜빡했어요"는 건너뛴 게 아니라 못 먹은 날로 남는다.
+function openSkipSheet(id, key = todayKey()) {
+  const it = itemById(id);
+  if (!it) return;
+  const today = key === todayKey();
+  const chips = Object.entries(C.SKIP_WHY).map(([k, l]) => `<button class="btn" data-act="skip-save" data-arg="${k}">${esc(l)}</button>`).join('');
+  openSheet(`${it.icon} ${it.name} · ${today ? '오늘은 건너뛰기' : '그날 안 먹었어요'}`, 'SKIP', `<p class="lead">이유를 누르면 바로 저장돼요. 쌓이면 약 탭의 복용 기록에서 어떤 날 건너뛰는지 보여요. "깜빡했어요"는 건너뛴 날이 아니라 못 먹은 날로 남아요.</p>
+    <label class="fld"><span>메모 (선택)</span><input name="note" maxlength="40" autocomplete="off" placeholder="오후에 일정이 없어서"></label>
+    <div class="row-btns reasons">${chips}</div>`, {
+    'skip-save'(why) {
+      const note = v('note').trim() || undefined;
+      if (why === 'forgot') store.setMiss(key, id, 'forgot', note);
+      else store.setSkip(key, id, true, why, note);
+      closeSheet();
+      toast(why === 'forgot' ? '못 먹은 날로 남겼어요' : `건너뜀 · ${C.SKIP_WHY[why]}`, { label: '취소', fn: () => store.setSkip(key, id, false) });
+    },
+  });
+}
+
+// 예정 시각 입력: 없음 / 시각 / 기상 후 / 다른 항목 후
+function planHtml(it) {
+  const p = it.plan || {}, mode = p.time ? 'time' : p.wake != null ? 'wake' : p.after ? 'after' : '';
+  const anchors = C.activeItems(cfg()).filter(i => i.type === 'check' && i.id !== it.id);
+  return `<div class="fld"><span>예정 시각 (선택)</span>${seg('planmode', mode, [['', '없음'], ['time', '시각'], ['wake', '기상 후'], ['after', '다른 항목 후']])}</div>
+    <div data-plan="time"><label class="fld inline"><span>매일</span><input type="time" name="plantime" value="${esc(p.time || '14:00')}"><span>에</span></label></div>
+    <div data-plan="wake"><label class="fld inline"><span>일어나고</span><input type="number" name="planwake" inputmode="decimal" step="0.25" min="0" max="20" value="${p.wake ?? 0.5}"><span>시간 뒤</span></label></div>
+    <div data-plan="after"><div class="fld2"><label class="fld"><span>기준</span><select name="planafter">${anchors.map(a => `<option value="${esc(a.id)}" ${p.after === a.id ? 'selected' : ''}>${esc(a.icon)} ${esc(a.name)}</option>`).join('')}</select></label>
+      <label class="fld"><span>몇 시간 뒤</span><input type="number" name="planh" inputmode="decimal" step="0.25" min="0" max="20" value="${p.h ?? 4.5}"></label></div></div>
+    <p class="hint" data-plan="time wake after">예정 30분 전부터 코치가 먹을지·건너뛸지 묻고, 제시간·늦음·건너뜀을 기록해요. 늦게 일어나는 날이 많으면 "다른 항목 후"가 맞을 수 있어요.</p>`;
+}
+function readPlan() {
+  const m = segv('planmode');
+  const num = n => parseFloat(v(n));
+  if (m === 'time' && v('plantime')) return { time: v('plantime') };
+  if (m === 'wake' && Number.isFinite(num('planwake'))) return { wake: num('planwake') };
+  if (m === 'after' && v('planafter') && Number.isFinite(num('planh'))) return { after: v('planafter'), h: num('planh') };
+  return undefined;
+}
+
 function openItemSheet(id, preset) {
   const cur = id ? itemById(id) : null;
   const it = cur || { name: '', icon: '⭐', cat: 'habit', type: 'check', block: 'am', ...preset };
@@ -954,6 +1265,7 @@ function openItemSheet(id, preset) {
     <div class="fld"><span>기록 방식</span>${seg('mode', mode, [['check', '한 번 체크'], ['count', '횟수'], ['log-note', '메모'], ['log-min', '시간(분)'], ['log-num', '숫자']])}</div>
     <div class="fld"><span>시간대</span>${seg('block', it.block, Object.entries(C.BLOCK_NAMES))}</div>
     <label class="chk"><input type="checkbox" name="essential" ${it.essential ? 'checked' : ''}><span>필수 항목 (연속에 들어가고, 가볍게 모드에서도 남아요)</span></label>
+    <div data-show="check">${planHtml(it)}</div>
     <label class="fld"><span>신호 (선택)</span><input name="cue" maxlength="20" value="${esc(it.cue || '')}" placeholder="양치한 다음에" autocomplete="off"></label>
     <p class="hint" style="margin:-6px 0 12px">이미 매일 하는 일 바로 다음에 붙이면 덜 잊어요. 타일과 코치에 보여요.</p>
     <div class="fld2" data-show="count"><label class="fld"><span>하루 목표</span><input name="target" type="number" inputmode="numeric" min="1" max="99" value="${it.target ?? ''}" placeholder="없음"></label><label class="fld"><span>코치 알림 간격 (분)</span><input name="every" type="number" inputmode="numeric" min="10" max="600" value="${it.every ?? ''}" placeholder="없음"></label></div>
@@ -964,9 +1276,10 @@ function openItemSheet(id, preset) {
     <p class="err" id="sheet-err" hidden></p>
     <div class="row-btns"><button class="btn pri" data-act="save">저장</button>${cur ? '<button class="btn danger" data-act="del">삭제</button>' : ''}</div>`;
   const refresh = () => {
-    const m = segv('mode'), c = segv('cat');
+    const m = segv('mode'), c = segv('cat'), pm = segv('planmode');
     document.querySelectorAll('#sheet [data-show]').forEach(el => (el.hidden = !el.dataset.show.split(' ').includes(m)));
     document.querySelectorAll('#sheet [data-show-cat]').forEach(el => (el.hidden = el.dataset.showCat !== c));
+    document.querySelectorAll('#sheet [data-plan]').forEach(el => (el.hidden = !el.dataset.plan.split(' ').includes(pm)));
   };
   let armed = false;
   openSheet(cur ? '항목 편집' : '항목 추가', 'ITEM', body, {
@@ -983,7 +1296,7 @@ function openItemSheet(id, preset) {
       const goal = type === 'check' ? undefined : num('goal');
       const fxdur = cat === 'med' ? num('fxdur') : undefined;
       const item = {
-        ...(cur || {}),
+        ...(cur || (preset?.id ? { id: preset.id } : {})),
         name,
         icon: v('icon').trim() || '⭐',
         cat,
@@ -998,6 +1311,7 @@ function openItemSheet(id, preset) {
         goal: goal ? { total: Math.round(goal), from: cur?.goal?.from || todayKey() } : undefined,
         fx: fxdur ? { on: Math.round(parseFloat(v('fxon')) || 0), dur: fxdur } : undefined,
         drugs: cat === 'med' ? readDrugLinks() : undefined,
+        plan: type === 'check' ? readPlan() : undefined,
       };
       if (!cur) item.since = todayKey();
       store.saveItem(item);
@@ -1093,6 +1407,52 @@ function openSyncSheet() {
       sync.disconnect();
       closeSheet();
       toast('연결을 끊었어요. 토큰을 지웠어요');
+    },
+  });
+}
+
+// 날씨 위치: 지금 위치(반올림) 또는 도시 이름 검색
+function openWxSheet() {
+  openSheet('날씨 위치', 'SKY', `<p class="lead">날씨와 해 시각을 받을 곳이에요. 소수 첫째 자리(약 10km)까지만 보내요.</p>
+    <div class="row-btns"><button class="btn pri" data-act="wx-gps">지금 위치 쓰기</button></div>
+    <label class="fld" style="margin-top:12px"><span>또는 도시 이름</span><input name="city" maxlength="30" placeholder="서울" autocomplete="off"></label>
+    <div class="row-btns"><button class="btn" data-act="wx-search">찾기</button></div><div id="wx-results" class="sugg"></div><p class="err" id="sheet-err" hidden></p>`, {
+    'wx-gps'(_, el) {
+      if (!navigator.geolocation) return sheetErr('이 브라우저는 위치를 쓸 수 없어요');
+      el.disabled = true;
+      navigator.geolocation.getCurrentPosition(
+        p => {
+          const loc = { name: '지금 위치 근처', lat: WX.round1(p.coords.latitude), lon: WX.round1(p.coords.longitude) };
+          store.setLocal({ wx: { ...wx(), on: true, loc, data: null } });
+          closeSheet();
+          wxEnsure(true);
+        },
+        () => {
+          el.disabled = false;
+          sheetErr('위치를 가져오지 못했어요. 브라우저 위치 권한을 확인하거나 도시 이름으로 찾아 주세요');
+        },
+        { timeout: 15000, maximumAge: 3600000 },
+      );
+    },
+    async 'wx-search'(_, el) {
+      const q = v('city').trim();
+      if (!q) return sheetErr('도시 이름을 적어 주세요');
+      el.disabled = true;
+      try {
+        const res = await WX.searchCity(q, (u, o) => fetch(u, o));
+        sheetActs._res = res;
+        $('#wx-results').innerHTML = res.length ? res.map((r, i) => `<button data-act="wx-pick" data-arg="${i}">${esc(r.name)}</button>`).join('') : '<span class="muted">찾은 곳이 없어요</span>';
+      } catch (e) {
+        sheetErr(e?.message || '찾지 못했어요');
+      }
+      el.disabled = false;
+    },
+    'wx-pick'(i) {
+      const r = sheetActs._res?.[+i];
+      if (!r) return;
+      store.setLocal({ wx: { ...wx(), on: true, loc: r, data: null } });
+      closeSheet();
+      wxEnsure(true);
     },
   });
 }
@@ -1258,10 +1618,8 @@ function runCoach(a) {
   const key = todayKey();
   if (a.act === 'check' || a.act === 'count') addAt(itemById(a.arg), key);
   else if (a.act === 'log') actions.tile(a.arg);
-  else if (a.act === 'skip') {
-    store.setSkip(key, a.arg, true);
-    toast('오늘은 건너뛰어요', { label: '취소', fn: () => store.setSkip(key, a.arg, false) });
-  } else if (a.act === 't3-done') store.setTop3(key, a.arg, { done: now() });
+  else if (a.act === 'skip') actions['skip-why'](a.arg);
+  else if (a.act === 't3-done') store.setTop3(key, a.arg, { done: now() });
   else if (a.act === 'go-cond') $('#cond')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   else actions[a.act]?.(a.arg);
 }
@@ -1310,19 +1668,32 @@ const actions = {
     const it = itemById(id);
     if (!it) return;
     const key = todayKey(), day = store.day(key), [lo, hi] = timeRange(key);
-    const guess = usualFor(it, key) ?? C.guessTime(it, day, { key, rollover: rollover() });
+    // 예정 시각이 지났으면 예정 시각, 아니면 평소 시각, 그것도 없으면 시간대 기준
+    const due = C.dueOf(it, day, { rollover: rollover() });
+    const guess = due && due <= now() ? due : usualFor(it, key) ?? C.guessTime(it, day, { key, rollover: rollover() });
     const t = Math.max(lo, Math.min(hi - MIN, Math.max(C.wakeOf(day) || lo, guess)));
     afterLog(it, key, store.logEvent(key, id, { t, autoWake: true }));
+  },
+  // 건너뛰기: 약은 이유를 받고, 다른 항목은 바로 건너뛴다
+  'skip-why'(id, _el, key = todayKey()) {
+    const it = itemById(id);
+    if (!it) return;
+    if (it.cat === 'med') return openSkipSheet(id, key);
+    store.setSkip(key, id, true);
+    toast('오늘은 건너뛰어요', { label: '취소', fn: () => store.setSkip(key, id, false) });
   },
   'retro-yes'(id) {
     const it = itemById(id);
     if (!it) return;
     const key = C.addDays(todayKey(), -1), day = store.day(key);
-    const t = clampT(usualFor(it, key) ?? C.guessTime(it, day, { key, rollover: rollover() }), timeRange(key));
+    const due = C.dueOf(it, day, { rollover: rollover() });
+    const t = clampT(due ?? usualFor(it, key) ?? C.guessTime(it, day, { key, rollover: rollover() }), timeRange(key));
     afterLog(it, key, store.logEvent(key, id, { t }));
   },
   'retro-no'(id) {
-    store.setMiss(C.addDays(todayKey(), -1), id);
+    const key = C.addDays(todayKey(), -1);
+    if (itemById(id)?.cat === 'med') return openSkipSheet(id, key);
+    store.setMiss(key, id);
   },
   'retro-close'() {
     store.setLocal({ seen: { ...local().seen, ['retro:' + C.addDays(todayKey(), -1)]: 1 } });
@@ -1361,6 +1732,18 @@ const actions = {
   'peak-rating'(arg) {
     ui.peakRating = arg;
     render();
+  },
+  'wx-toggle'() {
+    const W = wx();
+    if (W.on) return store.setLocal({ wx: { ...W, on: false } });
+    store.setLocal({ wx: { ...W, on: true } });
+    if (!W.loc) openWxSheet();
+    else wxEnsure(true);
+  },
+  'wx-loc': () => openWxSheet(),
+  'stat-add'(id) {
+    const s = gameCtx().stats.find(x => x.id === id);
+    if (s?.add) openItemSheet(null, { ...s.add, id: s.metric.item });
   },
   'med-new'(id) {
     const p = profileById(id);
@@ -1579,13 +1962,41 @@ document.addEventListener('keydown', e => {
 });
 window.addEventListener('popstate', () => closeSheet(true));
 
-let lastExp = { key: '', exp: 0 };
+// 하루 목표, 레벨 업, 스탯 등급이 오르는 순간을 알려준다 (내가 기록했을 때만, 동기화로 들어온 건 조용히)
+const snap = () => {
+  const g = gameCtx();
+  return { key: todayKey(), exp: g.today.exp, lv: g.L.lv, tier: g.tier.name, steps: Object.fromEntries(g.stats.map(s => [s.id, [s.reached, s.grade, s.name]])) };
+};
+let lastSnap = null;
+function celebrate(a, b) {
+  if (!a) return;
+  const msgs = [];
+  let big = null;
+  if (a.key === b.key && a.exp < C.EXP_GOAL && b.exp >= C.EXP_GOAL) {
+    big = 'CLEAR!';
+    msgs.push(`하루 목표 달성 · +${GM.CLEAR_BONUS} EXP`);
+  }
+  for (const [id, [n, grade, name]] of Object.entries(b.steps)) {
+    if (n > (a.steps[id]?.[0] ?? n)) {
+      big = 'RANK UP!';
+      msgs.push(`${name} ${grade} 달성 · +${GM.STEP_BONUS} EXP`);
+    }
+  }
+  if (b.lv > a.lv) {
+    big = 'LEVEL UP!';
+    msgs.push(`Lv.${b.lv}${b.tier !== a.tier ? ` · ${b.tier} 승급` : ''}`);
+  }
+  if (big) {
+    burst(big);
+    toast(msgs.join(' · '));
+  }
+}
 store.subscribe(kind => {
   if (kind !== 'local') ver++;
   if (kind === 'data') sync.schedule();
-  const tk = todayKey(), e = C.expOf(store.day(tk), cfg());
-  if (kind === 'data' && lastExp.key === tk && lastExp.exp < C.EXP_GOAL && e >= C.EXP_GOAL) burst();
-  lastExp = { key: tk, exp: e };
+  const s = snap();
+  if (kind === 'data') celebrate(lastSnap, s);
+  lastSnap = s;
   if (store.failed()) toast('기기 저장 공간이 부족해요. 설정에서 내보내기를 해 주세요');
   render();
 });
@@ -1607,8 +2018,26 @@ setInterval(() => !document.hidden && render(), 30000);
 setInterval(() => !document.hidden && local().gh && sync.syncNow(), 180000);
 
 applyTheme();
-lastExp = { key: todayKey(), exp: C.expOf(store.day(todayKey()), cfg()) };
+lastSnap = snap();
 paint();
+wxEnsure();
+setInterval(() => !document.hidden && wxEnsure(), 10 * MIN);
+
+// 홈 화면 아이콘을 길게 눌러 나오는 바로가기: ?do=항목 (바로 기록), ?focus=분 (집중 시작)
+{
+  const qs = new URLSearchParams(location.search);
+  const doId = qs.get('do'), focusMin = qs.get('focus');
+  if (doId || focusMin) {
+    history.replaceState(null, '', location.pathname); // 새로고침해도 두 번 기록되지 않게
+    const it = doId && itemById(doId);
+    if (it) {
+      const s = C.itemState(store.day(todayKey()), it);
+      if (it.type === 'check' && s.done) openTileSheet(it.id);
+      else addAt(it, todayKey());
+    } else if (doId) toast('그 항목을 찾지 못했어요');
+    if (focusMin && /^\d{1,3}$/.test(focusMin) && !local().focus) actions.focus(focusMin);
+  }
+}
 if (local().focus) tickFocus();
 if (local().gh) sync.syncNow();
 // 새 버전이 올라오면 알려준다 (앱을 켜 둔 채로 있어도)

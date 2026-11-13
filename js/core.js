@@ -195,6 +195,83 @@ export function dayStatus(day, cfg) {
   return recorded(day) ? 1 : 0;
 }
 
+// ---------- 예정 시각과 복용 상태 ----------
+// item.plan = { time: '14:00' } | { wake: 0.5 } (기상 후 시간) | { after: 'med_am', h: 4.5 } (다른 항목 기록 뒤)
+
+export const SKIP_WHY = { light: '오후 일이 가벼워요', sleep: '잠 때문에', body: '몸 상태', out: '약이 없어요', forgot: '깜빡했어요', other: '기타' };
+
+export function dueOf(item, day, { rollover = 4 } = {}) {
+  const p = item?.plan;
+  if (!p || !day) return null;
+  if (p.time) return tsFor(day.date, p.time, rollover);
+  if (p.wake != null) return wakeOf(day) ? wakeOf(day) + p.wake * HOUR : null;
+  if (p.after) {
+    const a = live(day).find(e => e.item === p.after);
+    return a ? a.t + (p.h || 0) * HOUR : null;
+  }
+  return null;
+}
+
+// 그날 이 항목이 어떤 상태인지. ended=true면 지나간 날로 본다.
+// kind: taken(제시간 ±30분) | late | early | skipped | missed | none(지난 날인데 기록 없음)
+//       | waiting(기준 항목을 아직 안 먹음) | upcoming | due(±30분) | overdue
+export function doseState(item, day, { now = Date.now(), rollover = 4, ended = false } = {}) {
+  const s = itemState(day, item);
+  const due = dueOf(item, day, { rollover });
+  const sk = (day?.skips || []).find(x => x.id === item.id);
+  if (s.count) {
+    const t = s.evs[0].t, delay = due ? Math.round((t - due) / MIN) : null;
+    return { kind: delay == null || Math.abs(delay) <= 30 ? 'taken' : delay > 0 ? 'late' : 'early', t, due, delay };
+  }
+  if (sk?.on) return { kind: 'skipped', due, why: sk.why || 'other', note: sk.note };
+  if (sk?.miss) return { kind: 'missed', due, why: sk.why, note: sk.note };
+  if (ended) return { kind: 'none', due };
+  if (!due) return { kind: item?.plan?.after ? 'waiting' : 'open', due: null };
+  if (now < due - 30 * MIN) return { kind: 'upcoming', due };
+  const delay = Math.round((now - due) / MIN);
+  return { kind: delay > 30 ? 'overdue' : 'due', due, delay };
+}
+
+const TAKEN = ['taken', 'late', 'early'];
+export function doseSummary(hist) {
+  const s = { taken: 0, onTime: 0, late: 0, early: 0, skipped: 0, missed: 0, none: 0, why: {}, delays: [] };
+  for (const h of hist) {
+    if (TAKEN.includes(h.kind)) {
+      s.taken++;
+      if (h.kind === 'taken') s.onTime++;
+      else s[h.kind]++;
+      if (h.delay != null) s.delays.push(h.delay);
+    } else if (h.kind === 'skipped' || h.kind === 'missed') {
+      s[h.kind]++;
+      if (h.why) s.why[h.why] = (s.why[h.why] || 0) + 1;
+    } else if (h.kind === 'none') s.none++;
+  }
+  const lates = s.delays.filter(d => d > 30);
+  s.lateAvg = lates.length ? Math.round(lates.reduce((a, b) => a + b, 0) / lates.length) : null;
+  return s;
+}
+
+// 먹은 날과 건너뛴 날 비교: 예정 시각부터 hours시간 동안의 집중도, 잠든 시각, 핵심 3가지 완료율
+export function doseOutcomes(item, days, { rollover = 4, hours = 6 } = {}) {
+  const acc = { taken: { n: 0, attn: [], sleep: [], t3: [] }, skipped: { n: 0, attn: [], sleep: [], t3: [] } };
+  for (const d of days) {
+    if (!d) continue;
+    const ds = doseState(item, d, { rollover, ended: true });
+    const g = TAKEN.includes(ds.kind) ? 'taken' : ds.kind === 'skipped' ? 'skipped' : null;
+    if (!g) continue;
+    const A = acc[g];
+    A.n++;
+    const from = ds.due || ds.t;
+    if (from) for (const e of live(d)) if (e.item === 'attn' && e.t >= from && e.t < from + hours * HOUR) A.attn.push(e.v);
+    if (sleepOf(d)) A.sleep.push(relMin(sleepOf(d), rollover));
+    const t3 = top3Of(d);
+    if (t3.length) A.t3.push(t3.filter(x => x.done).length / t3.length);
+  }
+  const mean = xs => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+  const fin = A => ({ n: A.n, attn: mean(A.attn), attnN: A.attn.length, sleep: mean(A.sleep), t3: mean(A.t3), t3N: A.t3.length });
+  return { taken: fin(acc.taken), skipped: fin(acc.skipped) };
+}
+
 // 어제 체크되지 않은 필수 (했는데 기록만 못 한 경우를 다음 날 바로잡는다)
 export function retroItems(day, cfg) {
   if (!day) return [];
@@ -489,6 +566,11 @@ export function dayReport(day, cfg) {
   const bits = [];
   for (const it of activeItems(cfg, day.date)) {
     const s = itemState(day, it);
+    if (it.type === 'check' && !s.count && (s.skipped || s.missed)) {
+      const why = (day.skips || []).find(x => x.id === it.id)?.why;
+      bits.push(`${it.name} ${s.skipped ? '건너뜀' : '못 함'}${why ? `(${SKIP_WHY[why] || why})` : ''}`);
+      continue;
+    }
     if (!s.count) continue;
     if (it.type === 'check') bits.push(`${it.name} ${fmtTime(s.last)}`);
     else if (it.type === 'count') bits.push(`${it.name} ${s.count}${it.unit || '번'}`);
@@ -549,10 +631,28 @@ export function coach({ now, day, cfg, local = {}, typical = null, chain = null,
     else if (chain.comeback >= 2) chainSub = `다시 시작하는 날이에요. 지난번엔 🔥${chain.comeback}일 이어갔어요`;
   }
 
-  // 1) 지금 시간대이거나 앞 시간대에서 넘어온 체크 항목
+  // 0.5) 예정 시각이 있는 항목: 30분 전부터 먹을지(할지)·건너뛸지 정할 때까지
+  const rollover = cfg?.prefs?.rollover ?? 4;
+  for (const it of items) {
+    if (!it.plan || it.type !== 'check' || (lite && !it.essential)) continue;
+    const ds = doseState(it, day, { now, rollover });
+    if (ds.kind !== 'due' && ds.kind !== 'overdue') continue;
+    const verb = it.cat === 'med' ? '먹었어요' : '했어요', over = ds.kind === 'overdue';
+    push(it.essential ? 8 : 12, {
+      key: 'dose:' + it.id,
+      icon: it.icon,
+      title: `${it.name} · ${fmtTime(ds.due)} 예정${over ? ` · ${fmtDur(ds.delay)} 지났어요` : ''}`,
+      sub: it.cat === 'med' ? '먹었는지, 오늘은 건너뛸지 골라요' : '했는지, 오늘은 건너뛸지 골라요',
+      action: { label: over ? '방금 ' + verb : verb, act: 'check', arg: it.id },
+      alt: over ? { label: '아까 ' + verb, act: 'ago', arg: it.id } : null,
+      alt2: { label: '오늘은 건너뛰기', act: 'skip-why', arg: it.id },
+    });
+  }
+
+  // 1) 지금 시간대이거나 앞 시간대에서 넘어온 체크 항목 (예정 시각이 있는 항목은 위에서 따로)
   let n = 0;
   for (const it of items) {
-    if (it.type !== 'check' || it.block === 'any') continue;
+    if (it.type !== 'check' || it.block === 'any' || it.plan) continue;
     const s = st.get(it.id);
     if (s.done || s.skipped) continue;
     const bi = blockIdx(it.block);

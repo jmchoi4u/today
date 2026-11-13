@@ -86,7 +86,7 @@ test('바뀐 것이 없으면 다시 받지 않는다', async () => {
   await a.connect();
   gh.log.length = 0;
   await a.sync.syncNow();
-  assert.deepEqual(gh.log, ['GET /repos/me/today-data/contents/config.json', 'GET /repos/me/today-data/contents/meds.json', 'GET /repos/me/today-data/contents/days/2026'], '목록만 확인하고 파일은 받지 않는다');
+  assert.deepEqual(gh.log, ['GET /repos/me/today-data/contents/config.json', 'GET /repos/me/today-data/contents/meds.json', 'GET /repos/me/today-data/contents/game.json', 'GET /repos/me/today-data/contents/days/2026'], '목록만 확인하고 파일은 받지 않는다');
   gh.log.length = 0;
   a.store.logEvent(KEY, 'water');
   await a.sync.syncNow({ pull: false });

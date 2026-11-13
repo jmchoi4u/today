@@ -9,6 +9,7 @@ const K_CFG = 'today.cfg';
 const K_DAY = 'today.day.';
 const K_LOCAL = 'today.local';
 const K_MEDS = 'today.meds'; // 약 정보: 비공개 저장소의 meds.json을 받아 둔 것 (앱에서는 읽기만)
+const K_GAME = 'today.game'; // 스탯 정의: 비공개 저장소의 game.json (앱에서는 읽기만)
 
 const LOCAL_DEFAULTS = {
   gh: null, // { repo, token } 이 기기에만 저장. 동기화 대상 아님
@@ -52,6 +53,9 @@ export function createStore({ storage, now = Date.now } = {}) {
   const validMeds = m => !!m && typeof m === 'object' && Array.isArray(m.drugs);
   let meds = read(K_MEDS);
   if (!validMeds(meds)) meds = null;
+  const validGame = g => !!g && typeof g === 'object' && Array.isArray(g.stats);
+  let game = read(K_GAME);
+  if (!validGame(game)) game = null;
 
   const emit = kind => subs.forEach(fn => fn(kind));
   const saveLocal = () => write(K_LOCAL, local);
@@ -136,9 +140,11 @@ export function createStore({ storage, now = Date.now } = {}) {
   const setReview = (key, r) => mutDay(key, (d, m) => { d.review = r ? { ...r, m } : { off: true, m }; });
   const setLite = (key, on) => mutDay(key, (d, m) => { d.lite = { on: !!on, m }; });
   const setTop3 = (key, id, patch) => mutDay(key, (d, m) => upsert(d.top3, id, patch, m, { text: '', done: 0 }));
-  const setSkip = (key, itemId, on) => mutDay(key, (d, m) => upsert(d.skips, itemId, { on: !!on, miss: false }, m));
-  // "안 했어요": 어제 정리에서 다시 묻지 않게 표시만 한다 (못 한 날로 남는다)
-  const setMiss = (key, itemId) => mutDay(key, (d, m) => upsert(d.skips, itemId, { on: false, miss: true }, m));
+  // 건너뛰기: 이유(why)와 메모를 함께 남긴다. 취소하면 이유도 지운다.
+  const setSkip = (key, itemId, on, why, note) =>
+    mutDay(key, (d, m) => upsert(d.skips, itemId, { on: !!on, miss: false, why: on ? why : undefined, note: on ? note : undefined }, m));
+  // "못 했어요": 다시 묻지 않게 표시한다 (건너뛴 날이 아니라 못 한 날로 남는다)
+  const setMiss = (key, itemId, why, note) => mutDay(key, (d, m) => upsert(d.skips, itemId, { on: false, miss: true, why, note }, m));
 
   // ----- 설정(항목·장소) -----
   function mutCfg(fn) {
@@ -199,6 +205,21 @@ export function createStore({ storage, now = Date.now } = {}) {
     else {
       try {
         storage.removeItem(K_MEDS);
+      } catch {
+        /* 지울 수 없는 저장소 */
+      }
+    }
+    emit('remote');
+  }
+
+  function setGame(doc) {
+    const next = validGame(doc) ? doc : null;
+    if (canon(next) === canon(game)) return;
+    game = next;
+    if (game) write(K_GAME, game);
+    else {
+      try {
+        storage.removeItem(K_GAME);
       } catch {
         /* 지울 수 없는 저장소 */
       }
@@ -280,7 +301,7 @@ export function createStore({ storage, now = Date.now } = {}) {
 
   // ----- 내보내기/가져오기 -----
   function exportAll() {
-    const out = { app: 'today', v: 1, exportedAt: now(), config: cfg, meds, days: {} };
+    const out = { app: 'today', v: 1, exportedAt: now(), config: cfg, meds, game, days: {} };
     for (const k of dayKeys()) out.days[k] = day(k);
     return out;
   }
@@ -288,6 +309,7 @@ export function createStore({ storage, now = Date.now } = {}) {
     if (!data || data.app !== 'today' || typeof data.days !== 'object') throw new Error('오늘 앱의 백업 파일이 아니에요');
     let n = 0;
     if (validMeds(data.meds)) setMeds(data.meds);
+    if (validGame(data.game)) setGame(data.game);
     if (validConfig(data.config)) {
       applyRemote(CFG_PATH, data.config);
       markDirty(CFG_PATH);
@@ -316,6 +338,9 @@ export function createStore({ storage, now = Date.now } = {}) {
     } else if (storageKey === K_MEDS) {
       const m = read(K_MEDS);
       meds = validMeds(m) ? m : null;
+    } else if (storageKey === K_GAME) {
+      const g = read(K_GAME);
+      game = validGame(g) ? g : null;
     } else if (storageKey.startsWith(K_DAY)) {
       days.delete(storageKey.slice(K_DAY.length));
     }
@@ -333,6 +358,8 @@ export function createStore({ storage, now = Date.now } = {}) {
     meds: () => meds?.drugs || [],
     medsDoc: () => meds,
     setMeds,
+    game: () => game,
+    setGame,
     failed: () => failed,
     logEvent, updateEvent, deleteEvent,
     setWake, setSleep, setReview, setLite, setTop3, setSkip, setMiss,

@@ -166,20 +166,24 @@ export function medSvg(m) {
     for (const [v, t] of [[G0.effRel, '효과 기준'], [0.8, '최고 80%']]) s += `<line x1="${L}" x2="${R}" y1="${y(v)}" y2="${y(v)}" class="med-th"/><text x="${R}" y="${y(v) - 3}" class="med-th-t">${t}</text>`;
   }
   m.groups.forEach((G, gi) => {
-    const pts = m.ts.map((t, i) => `${x(t)},${y(G.total[i] / G.max)}`);
+    const sc = G.scale || G.max || 1;
+    // 예정대로 먹으면: 점선 (실제 곡선 아래에 먼저 그린다)
+    if (G.projTotal) s += `<polyline points="${m.ts.map((t, i) => `${x(t)},${y(G.projTotal[i] / sc)}`).join(' ')}" class="med-proj g${gi}"/>`;
+    const pts = m.ts.map((t, i) => `${x(t)},${y(G.total[i] / sc)}`);
     s += `<path d="M${x(m.ts[0])},${BOT} L${pts.join(' L')} L${x(m.ts[m.ts.length - 1])},${BOT} Z" class="med-area g${gi}"/>`;
-    if (G.parts.length > 1) for (const P of G.parts) s += `<polyline points="${m.ts.map((t, i) => `${x(t)},${y(P.ys[i] / G.max)}`).join(' ')}" class="med-part g${gi}"/>`;
+    if (G.parts.length > 1) for (const P of G.parts) s += `<polyline points="${m.ts.map((t, i) => `${x(t)},${y(P.ys[i] / sc)}`).join(' ')}" class="med-part g${gi}"/>`;
     s += `<polyline points="${pts.join(' ')}" class="med-line g${gi}"/>`;
     for (const [a, b] of G.effect) s += `<rect x="${x(a)}" y="${BOT + 5}" width="${Math.max(2, r1(x(b) - x(a)))}" height="5" rx="2.5" class="med-eff g${gi}"/>`;
     for (const [a, b] of G.peak) s += `<rect x="${x(a)}" y="${BOT + 4}" width="${Math.max(2, r1(x(b) - x(a)))}" height="7" rx="3.5" class="med-peak g${gi}"/>`;
   });
-  // 복용 시각 (겹치면 아래 줄로)
+  // 복용 시각과 예정 시각 (겹치면 아래 줄로)
   let lastX = -99, row = 0;
-  for (const d of m.doses) {
+  const marks = [...m.doses.map(d => ({ ...d, plan: false })), ...(m.plannedDoses || []).map(d => ({ ...d, plan: true }))].sort((a, b) => a.t - b.t);
+  for (const d of marks) {
     const dx = x(d.t);
     row = dx - lastX < 58 ? 1 - row : 0;
     lastX = dx;
-    s += `<line x1="${dx}" x2="${dx}" y1="${TOP - 6 + row * 12}" y2="${BOT}" class="med-dose"/><text x="${Math.min(Math.max(dx, L + 24), R - 24)}" y="${TOP - 10 + row * 12}" class="med-dose-t">${esc(d.label)}</text>`;
+    s += `<line x1="${dx}" x2="${dx}" y1="${TOP - 6 + row * 12}" y2="${BOT}" class="med-dose${d.plan ? ' plan' : ''}"/><text x="${Math.min(Math.max(dx, L + 24), R - 24)}" y="${TOP - 10 + row * 12}" class="med-dose-t${d.plan ? ' plan' : ''}">${esc(d.label)}</text>`;
   }
   // 기록한 집중도 (1~5를 같은 높이 축에)
   const rp = (m.ratings || []).filter(r => r.t >= t0 && r.t <= t1);
@@ -199,6 +203,28 @@ export function medSvg(m) {
     s += `<rect x="${L}" y="${yy}" width="${R - L}" height="18" rx="9" class="med-steady"/><text x="${L + 10}" y="${yy + 13}" class="med-steady-t">${esc(st.text)}</text>`;
   });
   return `<svg viewBox="0 0 ${W} ${H}" class="flow-svg" role="img" aria-label="오늘 약 효과 곡선">${s}</svg>`;
+}
+
+// 스탯 레이더: 처음 평가(점선)와 지금(채움). now/base는 50~98점
+export function radarSvg(stats) {
+  const n = stats.length;
+  if (n < 3) return '';
+  const W = 340, H = 260, cx = 170, cy = 128, R = 92;
+  const ang = i => ((-90 + (i * 360) / n) * Math.PI) / 180;
+  const pt = (i, v) => [r1(cx + Math.cos(ang(i)) * R * v), r1(cy + Math.sin(ang(i)) * R * v)];
+  const norm = sc => Math.max(0.08, Math.min(1, (sc - 50) / 48));
+  let s = '';
+  for (const k of [0.25, 0.5, 0.75, 1]) s += `<polygon points="${stats.map((_, i) => pt(i, k).join(',')).join(' ')}" class="rd-grid"/>`;
+  for (let i = 0; i < n; i++) s += `<line x1="${cx}" y1="${cy}" x2="${pt(i, 1)[0]}" y2="${pt(i, 1)[1]}" class="rd-grid"/>`;
+  s += `<polygon points="${stats.map((x, i) => pt(i, norm(x.base)).join(',')).join(' ')}" class="rd-base"/>`;
+  s += `<polygon points="${stats.map((x, i) => pt(i, norm(x.now)).join(',')).join(' ')}" class="rd-now"/>`;
+  stats.forEach((x, i) => {
+    const [px, py] = pt(i, norm(x.now));
+    s += `<circle cx="${px}" cy="${py}" r="3.5" class="rd-dot"/>`;
+    const [lx, ly] = pt(i, 1.2);
+    s += `<text x="${lx}" y="${ly + 4}" class="rd-lab">${esc(x.name)}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" class="flow-svg" role="img" aria-label="스탯 레이더">${s}</svg>`;
 }
 
 // 내 데이터로 본 피크: 칸마다 평균 집중도(1~5) 막대, 기록 수, 가장 높은 구간 강조
