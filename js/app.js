@@ -4,7 +4,7 @@ import { createStore } from './store.js';
 import { createSync } from './sync.js';
 import { stripSvg, flowSvg } from './chart.js';
 
-const VERSION = '1.0';
+const VERSION = '1.1';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -40,6 +40,22 @@ const WEEKDAY = '일월화수목금토';
 const itemById = id => cfg().items.find(i => i.id === id);
 const nameOf = id => itemById(id) || C.SPECIAL[id] || { name: '삭제된 항목', icon: '▫️' };
 const season = () => C.seasonInfo(todayKey(), cfg().prefs?.seasonStart);
+const clampT = (t, [lo, hi]) => Math.min(hi, Math.max(lo, t));
+// 그날 기록할 수 있는 시각: 논리적 하루의 시작부터, 오늘이면 지금까지
+function timeRange(key) {
+  const lo = C.dayStartTs(key, rollover());
+  return [lo, Math.max(lo, Math.min(lo + 24 * HOUR - MIN, now()))];
+}
+// 평소 시각은 체크 항목에만 쓴다 (물 같은 횟수는 의미가 없다)
+function usualFor(it, key) {
+  if (!it || it.type !== 'check') return null;
+  const hist = C.lastDays(C.addDays(key, -1), 21).map(getDay);
+  return C.usualTime(it, hist, { wake: C.wakeOf(getDay(key)), key, rollover: rollover() });
+}
+function typicalWakeTs(key) {
+  const m = C.typicalWake(C.lastDays(C.addDays(key, -1), 14).map(getDay));
+  return m == null ? null : C.tsFor(key, C.fmtMinutesOfDay(m), rollover());
+}
 const haptic = p => {
   try {
     navigator.vibrate?.(p ?? 10);
@@ -53,6 +69,28 @@ let ver = 0, memo = { ver: -1, days: [] };
 function allDays() {
   if (memo.ver !== ver) memo = { ver, days: store.dayKeys().map(k => store.day(k)) };
   return memo.days;
+}
+
+// 연속: 하루 빠져도 이어지고 이틀 연속으로 빠지면 끊긴다. 데이터가 바뀔 때만 다시 센다.
+let chainMemo = { k: '' };
+function chainCtx() {
+  const k = ver + '|' + todayKey();
+  if (chainMemo.k !== k) chainMemo = { k, first: store.dayKeys()[0] || todayKey(), all: null, items: new Map() };
+  return chainMemo;
+}
+const firstKey = () => chainCtx().first;
+function chainNow() {
+  const c = chainCtx();
+  if (!c.all) c.all = C.chainInfo(k => (k < c.first ? null : C.dayStatus(getDay(k), cfg())), todayKey());
+  return c.all;
+}
+function itemChainN(it) {
+  const c = chainCtx();
+  if (!c.items.has(it.id)) {
+    const from = it.since && it.since > c.first ? it.since : c.first;
+    c.items.set(it.id, C.chainInfo(k => (k < from ? null : getDay(k) ? C.itemStatus(getDay(k), it) : 0), todayKey()).n);
+  }
+  return c.items.get(it.id);
 }
 
 // ---------- 공통 조각 ----------
@@ -108,8 +146,9 @@ function topHtml() {
 }
 
 function hudHtml() {
-  const tk = todayKey(), e = C.expOf(store.day(tk), cfg()), se = season();
-  return `<div class="hud-in"><span class="hud-lv">${e >= C.EXP_GOAL ? 'CLEAR' : 'TODAY'}</span><span class="hud-name">🔥 ${C.streak(getDay, tk)}일 연속</span><span class="hud-max">시즌 ${se.n} · ${se.left ? 'D-' + se.left : '마지막 날'}</span></div>
+  const tk = todayKey(), e = C.expOf(store.day(tk), cfg()), se = season(), ch = chainNow();
+  const fire = ch.atRisk ? `🔥 ${ch.n}일 · 오늘 이어가기` : ch.n ? `🔥 ${ch.n}일 연속` : '🔥 오늘부터';
+  return `<div class="hud-in"><span class="hud-lv">${e >= C.EXP_GOAL ? 'CLEAR' : 'TODAY'}</span><span class="hud-name ${ch.atRisk ? 'risk' : ''}">${fire}</span><span class="hud-max">시즌 ${se.n} · ${se.left ? 'D-' + se.left : '마지막 날'}</span></div>
     <div class="hud-exp"><i style="width:${Math.min(100, e)}%"></i><span>오늘 EXP <b>${e}</b> / ${C.EXP_GOAL}</span></div>`;
 }
 
@@ -123,8 +162,20 @@ function ddayHtml() {
 }
 
 function startHtml() {
-  return `<section class="win start-card"><div class="say">${MOCHI}<div><b>언제 일어났어요?</b><p>누른 시각부터 오늘이 시작돼요. 늦게 일어난 날도 똑같이 흘러가요.</p></div></div>
-    <div class="row-btns"><button class="btn pri" data-act="wake" data-arg="0">방금</button><button class="btn" data-act="wake" data-arg="30">30분 전</button><button class="btn" data-act="wake" data-arg="60">1시간 전</button><button class="btn" data-act="time-wake">시간 선택</button></div></section>`;
+  const u = typicalWakeTs(todayKey());
+  const usual = u && u <= now() - 10 * MIN ? `<button class="btn" data-act="wake-at" data-arg="${u}">평소 ${C.fmtTime(u)}</button>` : '';
+  return `<section class="win start-card"><div class="say">${MOCHI}<div><b>언제 일어났어요?</b><p>고른 시각부터 오늘이 시작돼요. 늦게 일어난 날도 똑같이 흘러가요.</p></div></div>
+    <div class="row-btns"><button class="btn pri" data-act="wake" data-arg="0">방금</button>${usual}<button class="btn" data-act="wake" data-arg="30">30분 전</button><button class="btn" data-act="wake" data-arg="60">1시간 전</button><button class="btn" data-act="wake" data-arg="120">2시간 전</button><button class="btn" data-act="time-wake">직접 고르기</button></div></section>`;
+}
+
+// 어제 체크 안 된 필수: 했는데 기록만 못 한 날을 다음 날 바로잡는다
+function retroHtml() {
+  const yk = C.addDays(todayKey(), -1);
+  if (yk < firstKey() || local().seen['retro:' + yk]) return '';
+  const list = C.retroItems(store.day(yk), cfg());
+  if (!list.length) return '';
+  const rows = list.map(it => `<div class="retro-row"><span class="row-ic">${esc(it.icon)}</span><span class="retro-n">${esc(it.name)}</span><button class="btn sm pri" data-act="retro-yes" data-arg="${esc(it.id)}">${it.cat === 'med' ? '먹었어요' : '했어요'}</button><button class="btn sm" data-act="retro-no" data-arg="${esc(it.id)}">못 했어요</button></div>`).join('');
+  return win('어제 기록 정리', 'YESTERDAY', `<p class="lead">어제 체크 안 된 필수예요. 했는데 기록만 못 했다면 눌러 주세요. 평소 시각으로 들어가고, 바로 고칠 수 있어요.</p>${rows}`, '', `<button class="icon-btn" data-act="retro-close" aria-label="어제 기록 정리 닫기">${IC.x}</button>`);
 }
 
 function stripHtml(day, today) {
@@ -137,7 +188,7 @@ function stripHtml(day, today) {
 function coachList(day) {
   const tk = todayKey();
   const hist = C.lastDays(C.addDays(tk, -1), 14).map(getDay);
-  const list = C.coach({ now: now(), day, cfg: cfg(), local: local(), typical: C.typicalWake(hist) });
+  const list = C.coach({ now: now(), day, cfg: cfg(), local: local(), typical: C.typicalWake(hist), chain: chainNow() });
   if (list[0].key === 'start' || list[0].key === 'closed') return list;
   const l = local(), sn = k => (l.snooze?.[k] || 0) > now();
   const extra = [];
@@ -170,18 +221,24 @@ function top3Html(day) {
 function tileHtml(it, s, { carried, later, today }) {
   const exp = C.itemExp(it);
   let sub;
-  if (it.type === 'check') sub = s.done ? `${C.fmtTime(s.last)} 완료` : s.skipped ? '오늘은 건너뜀' : carried ? `${C.BLOCK_NAMES[it.block]}에서 넘어옴` : it.essential ? '필수' : C.BLOCK_NAMES[it.block];
+  if (it.type === 'check') sub = s.done ? `${C.fmtTime(s.last)} 완료` : s.skipped ? '오늘은 건너뜀' : carried ? `${C.BLOCK_NAMES[it.block]}에서 넘어옴` : it.cue || (it.essential ? '필수' : C.BLOCK_NAMES[it.block]);
   else if (it.type === 'count') sub = (it.target ? `${s.count}/${it.target}${it.unit || ''}` : `${s.count}${it.unit || '번'}`) + (s.last ? ` · ${today ? C.ago(s.last, now()) : C.fmtTime(s.last)}` : '');
   else if (!s.count) sub = '눌러서 기록';
   else if (it.ask === 'min') sub = `${C.fmtDur(s.sum)} · ${s.count}번`;
   else if (it.ask === 'num') sub = `${s.lastV ?? ''}${it.unit || ''} · ${C.fmtTime(s.last)}`;
   else sub = `${s.count}번 · ${today ? C.ago(s.last, now()) : C.fmtTime(s.last)}`;
-  const goal = it.goal?.total ? `<span class="tile-goal">누적 ${C.goalCount(it, allDays())}/${it.goal.total}</span>` : '';
+  // 항목별 연속 (오늘 화면에서만)
+  let fire = '';
+  if (today && !s.skipped && (it.type === 'check' || (it.type === 'count' && it.target))) {
+    const ch = itemChainN(it);
+    if (ch >= 2) fire = `<span class="fire" aria-label="${ch}일 연속">🔥${ch}</span>`;
+  }
+  const goal =it.goal?.total ? `<span class="tile-goal">누적 ${C.goalCount(it, allDays())}/${it.goal.total}</span>` : '';
   const bar = it.type === 'count' && it.target ? `<span class="mini-bar"><i style="width:${Math.min(100, Math.round((s.count / it.target) * 100))}%"></i></span>` : '';
   const mark = it.type === 'check' ? `<span class="box">${IC.check}</span>` : `<span class="plus">${IC.plus}</span>`;
   const cls = ['tile', s.done && 'is-done', s.skipped && 'is-skip', later && 'is-later', ui.just === it.id && 'pop'].filter(Boolean).join(' ');
   return `<button class="${cls}" data-act="tile" data-arg="${esc(it.id)}" data-hold="tile-menu" aria-pressed="${!!s.done}">
-    <span class="tile-top"><span class="tile-ic" aria-hidden="true">${esc(it.icon || '⭐')}</span>${exp ? `<span class="q-reward">+${exp}</span>` : ''}</span>
+    <span class="tile-top"><span class="tile-ic" aria-hidden="true">${esc(it.icon || '⭐')}</span><span class="tile-badges">${fire}${exp ? `<span class="q-reward">+${exp}</span>` : ''}</span></span>
     <span class="tile-name">${esc(it.name)}</span><span class="tile-sub">${esc(sub)}</span>${goal}${bar}${mark}</button>`;
 }
 
@@ -201,7 +258,7 @@ function tilesHtml(day, items, today) {
   }
   const grid = (list, opt = {}) => `<div class="grid">${list.map(([it, s, carried]) => tileHtml(it, s, { carried, today, ...opt })).join('')}</div>`;
   const liteBtn = today ? `<button class="mini-toggle ${lite ? 'on' : ''}" data-act="lite" data-arg="${lite ? 0 : 1}" aria-pressed="${lite}">가볍게</button>` : '';
-  const tip = today && !local().seen.hold ? '<p class="hint">타일을 길게 누르면 시간 수정과 건너뛰기를 할 수 있어요. <button class="link" data-act="seen" data-arg="hold">알겠어요</button></p>' : '';
+  const tip = today && !local().seen.hold ? '<p class="hint">체크한 타일을 누르면 시각을 고칠 수 있어요. 길게 누르면 지난 시각으로 기록하거나 건너뛰어요. <button class="link" data-act="seen" data-arg="hold">알겠어요</button></p>' : '';
   let h = win(today ? `지금 · ${C.BLOCK_NAMES[cur]}` : '루틴', today ? 'NOW' : 'DAY', (nowL.length ? grid(nowL) : `<p class="empty">${lite ? '필수 항목은 다 했어요.' : '지금 할 것은 다 했어요.'}</p>`) + tip, '', liteBtn);
   if (any.length) h += win('언제든', 'ANY', grid(any));
   for (const b of C.BLOCKS) if (later.has(b.id)) h += win(`나중에 · ${b.name}`, 'LATER', grid(later.get(b.id), { later: true }), 'later');
@@ -253,6 +310,7 @@ function todayHtml() {
   if (!today) h += '<div class="note">지난 날을 보고 있어요. 타일을 누르면 시각을 정해서 기록할 수 있어요.</div>';
   if (today) h += ddayHtml();
   h += today && !C.wakeOf(day) ? startHtml() : stripHtml(day, today);
+  if (today) h += retroHtml();
   if (today && C.wakeOf(day)) h += coachHtml(day);
   h += top3Html(day);
   h += tilesHtml(day, C.activeItems(cfg(), key), today);
@@ -303,14 +361,15 @@ function weekHtml() {
     const d = d7[i], rec = C.recorded(d), e = rec ? C.expOf(d, c) : 0;
     return `<button class="wd ${rec ? '' : 'none'} ${k === tk ? 'today' : ''}" data-act="goto-day" data-arg="${k}" aria-label="${C.fmtDate(k)} ${rec ? 'EXP ' + e : '기록 없음'}"><span class="wd-bar ${e >= C.EXP_GOAL ? 'clear' : ''}"><i style="height:${Math.min(100, e)}%"></i></span><span class="wd-l">${WEEKDAY[C.keyToDate(k).getDay()]}</span><span class="wd-n">${rec ? e : '·'}</span></button>`;
   }).join('');
-  h += win('최근 7일', 'WEEK', `<div class="minis" style="margin-bottom:12px">${mini('연속 기록', C.streak(getDay, tk), '일')}${mini('7일 중 기록', s.recorded, '일')}${mini('필수 달성', s.essDays, '일')}</div>
-    <div class="week">${cols}</div><p class="hint">막대는 그날의 EXP예요. 노란 막대는 100을 채운 날이에요. 누르면 그날로 가요.</p>`);
+  h += win('최근 7일', 'WEEK', `<div class="minis" style="margin-bottom:12px">${mini('연속', chainNow().n, '일')}${mini('7일 중 기록', s.recorded, '일')}${mini('필수 달성', s.essDays, '일')}</div>
+    <div class="week">${cols}</div><p class="hint">연속은 필수를 다 한 날을 세요. 하루 빠져도 이어지고, 이틀 연속으로 빠지면 끊겨요. 막대는 그날의 EXP이고, 누르면 그날로 가요.</p>`);
 
   const rows = C.activeItems(c).filter(i => i.type === 'check' || (i.type === 'count' && i.target));
   if (rows.length) {
     let m = '<span></span>' + k7.map(k => `<span class="mx-h">${WEEKDAY[C.keyToDate(k).getDay()]}</span>`).join('');
     for (const it of rows) {
-      m += `<span class="mx-n">${esc(it.icon)} ${esc(it.name)}</span>`;
+      const ch = itemChainN(it);
+      m += `<span class="mx-n">${esc(it.icon)} ${esc(it.name)}${ch >= 2 ? ` <small>🔥${ch}</small>` : ''}</span>`;
       k7.forEach((k, i) => {
         const d = d7[i];
         if (!C.recorded(d) || (it.since && k < it.since)) return (m += '<span class="mx-c na"></span>');
@@ -411,6 +470,7 @@ function paint() {
   if (!(a && view.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName))) view.innerHTML = VIEWS[ui.tab]();
   $('#hud').innerHTML = hudHtml();
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.arg === ui.tab));
+  renderLogged();
   ensureFocusTick();
 }
 
@@ -435,6 +495,7 @@ function burst() {
 
 let sheetActs = {};
 function openSheet(title, tag, body, acts = {}) {
+  hideLogged();
   const el = $('#sheet');
   el.innerHTML = `<div class="sheet-bg" data-act="sheet-close"></div><div class="sheet win" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="win-head"><h2>${esc(title)}</h2><span class="win-tag">${tag}</span><button class="icon-btn" data-act="sheet-close" aria-label="닫기">${IC.x}</button></div><div class="win-body">${body}</div></div>`;
   el.hidden = false;
@@ -490,10 +551,9 @@ function afterLog(it, key, ev) {
   }, 700);
   haptic(12);
   ensureSeason();
-  stampLoc(key, ev);
-  const label = `${it.icon} ${it.name} ${C.fmtTime(ev.t)} 기록`;
-  if (it.type === 'log' && it.ask !== 'min' && it.ask !== 'num') toast(label, { label: '메모', fn: () => openEventSheet(ev.id, key) });
-  else toast(label, { label: '취소', fn: () => store.deleteEvent(key, ev.id) });
+  // 위치는 지금 막 한 기록에만 (어제 정리나 몇 시간 전 기록에 지금 위치를 붙이면 틀린다)
+  if (Math.abs(now() - ev.t) < 10 * MIN) stampLoc(key, ev);
+  showLogged(key, ev);
 }
 function addAt(it, key, t) {
   if (it.type === 'log' && (it.ask === 'min' || it.ask === 'num')) return openLogSheet(it, key, t);
@@ -528,19 +588,21 @@ function openLogSheet(it, key, t) {
 function openTileSheet(id) {
   const it = itemById(id);
   if (!it) return;
-  const key = viewKey(), today = isToday(), s = C.itemState(store.day(key), it);
-  const quick = today ? `<div class="row-btns">${[['지금', 0], ['15분 전', 15], ['30분 전', 30], ['1시간 전', 60]].map(([l, m]) => `<button class="btn" data-act="add-ago" data-arg="${m}">${l}</button>`).join('')}</div>` : '';
+  const key = viewKey(), today = key === todayKey(), day = store.day(key), s = C.itemState(day, it);
+  const u = usualFor(it, key), usualOk = u && u <= timeRange(key)[1];
+  // 오늘은 지금이 기본, 평소 시각이 한참 전이면 그쪽이 기본 (늦게 기록하는 경우가 많아서)
+  let def = today ? now() : u ?? C.guessTime(it, day, { key, rollover: rollover() });
+  if (today && usualOk && u < now() - 15 * MIN) def = u;
+  const presets = [];
+  if (today) presets.push([now(), '지금']);
+  if (usualOk) presets.push([u, `평소 ${C.fmtTime(u)}`]);
   const evRows = s.evs.map(e => `<button class="row no-ic" data-act="ev" data-arg="${e.id}"><span class="row-t">${C.fmtTime(e.t)}</span><span class="row-b">${esc(evDetail(e, it) || '기록')}</span><span class="row-go">${IC.right}</span></button>`).join('');
-  const body = `${quick}<div class="fld inline" style="margin-top:12px"><span>시각 지정</span><input type="time" name="time" value="${today ? C.fmtTime(now()) : '12:00'}"><button class="btn" data-act="add-at">기록</button></div>
+  const body = `${twHtml(key, def, presets)}<div class="row-btns"><button class="btn pri" data-act="add-tw">이 시각으로 기록</button></div>
     ${evRows ? `<h3 class="sub-h">${today ? '오늘' : '이날'} 기록</h3><div class="log">${evRows}</div>` : ''}
     <div class="row-btns">${it.type === 'check' && !s.done ? `<button class="btn" data-act="skip">${s.skipped ? '건너뛰기 취소' : '오늘은 건너뛰기'}</button>` : ''}<button class="btn ghost" data-act="edit-item">항목 편집</button></div>`;
-  openSheet(`${it.icon} ${it.name}`, 'QUEST', body, {
-    'add-ago'(m) {
-      closeSheet();
-      addAt(it, key, now() - m * MIN);
-    },
-    'add-at'() {
-      const t = C.tsFor(key, v('time') || '12:00', rollover());
+  openSheet(`${it.icon} ${it.name} · 언제 했어요?`, 'QUEST', body, {
+    'add-tw'() {
+      const t = tw.t;
       closeSheet();
       addAt(it, key, t);
     },
@@ -555,12 +617,14 @@ function openTileSheet(id) {
 }
 
 function openEventSheet(id, key = viewKey()) {
-  const e = store.day(key).events.find(x => x.id === id);
+  const e = store.day(key).events.find(x => x.id === id && !x.del);
   if (!e) return;
   const it = nameOf(e.item);
   const isCond = e.item === 'energy' || e.item === 'mood', hasMin = e.item === 'focus' || it.ask === 'min', isNum = it.ask === 'num', isMeal = it.cat === 'meal';
-  const t0 = C.fmtTime(e.t);
-  let body = `<label class="fld"><span>시각</span><input type="time" name="time" value="${t0}"></label>`;
+  const u = usualFor(itemById(e.item), key), presets = [];
+  if (key === todayKey()) presets.push([now(), '지금']);
+  if (u && u <= timeRange(key)[1]) presets.push([u, `평소 ${C.fmtTime(u)}`]);
+  let body = twHtml(key, e.t, presets);
   if (isCond) body += `<div class="fld"><span>값</span>${seg('v', e.v, [1, 2, 3, 4, 5].map(n => [n, n]))}</div>`;
   if (hasMin) body += `<label class="fld"><span>시간 (분)</span><input name="min" type="number" inputmode="numeric" min="1" max="600" value="${e.min || ''}"></label>`;
   if (isNum) body += `<label class="fld"><span>값${it.unit ? ` (${esc(it.unit)})` : ''}</span><input name="num" type="number" inputmode="decimal" step="0.1" value="${e.v ?? ''}"></label>`;
@@ -570,8 +634,7 @@ function openEventSheet(id, key = viewKey()) {
   openSheet(`${it.icon} ${it.name}`, 'EDIT', body, {
     save() {
       const patch = {};
-      const hm = v('time');
-      if (hm && hm !== t0) patch.t = C.tsFor(key, hm, rollover());
+      if (Math.round(tw.t / MIN) !== Math.round(e.t / MIN)) patch.t = tw.t;
       if (isCond) patch.v = +segv('v') || e.v;
       if (hasMin) patch.min = Math.max(1, Math.round(parseFloat(v('min')) || e.min || 1));
       if (isNum && Number.isFinite(parseFloat(v('num')))) patch.v = parseFloat(v('num'));
@@ -590,17 +653,20 @@ function openEventSheet(id, key = viewKey()) {
 }
 
 function openTimeSheet(kind) {
-  const key = viewKey(), day = store.day(key);
+  const key = viewKey(), day = store.day(key), today = key === todayKey();
   const cur = kind === 'wake' ? C.wakeOf(day) : C.sleepOf(day);
-  const def = C.fmtTime(cur || now());
-  openSheet(kind === 'wake' ? '기상 시각' : '취침 시각', 'TIME', `<label class="fld"><span>시각</span><input type="time" name="time" value="${def}"></label>
+  const lo = C.dayStartTs(key, rollover()), usual = kind === 'wake' ? typicalWakeTs(key) : null;
+  const def = cur || (today ? now() : kind === 'wake' ? usual || lo + 4 * HOUR : lo + 19 * HOUR);
+  const presets = [];
+  if (today) presets.push([now(), '지금']);
+  if (usual && usual <= timeRange(key)[1]) presets.push([usual, `평소 ${C.fmtTime(usual)}`]);
+  openSheet(kind === 'wake' ? '일어난 시각' : '잠든 시각', 'TIME', `${twHtml(key, def, presets)}
     <div class="row-btns"><button class="btn pri" data-act="save">저장</button>${kind === 'sleep' && cur ? '<button class="btn danger" data-act="clear">취침 기록 지우기</button>' : ''}</div>`, {
     save() {
-      const t = C.tsFor(key, v('time') || def, rollover());
       if (kind === 'wake') {
-        store.setWake(key, t);
+        store.setWake(key, tw.t);
         ensureSeason();
-      } else store.setSleep(key, t);
+      } else store.setSleep(key, tw.t);
       closeSheet();
     },
     clear() {
@@ -672,7 +738,9 @@ function openItemSheet(id, preset) {
     <div class="fld"><span>종류</span>${seg('cat', it.cat, Object.entries(C.CATS))}</div>
     <div class="fld"><span>기록 방식</span>${seg('mode', mode, [['check', '한 번 체크'], ['count', '횟수'], ['log-note', '메모'], ['log-min', '시간(분)'], ['log-num', '숫자']])}</div>
     <div class="fld"><span>시간대</span>${seg('block', it.block, Object.entries(C.BLOCK_NAMES))}</div>
-    <label class="chk"><input type="checkbox" name="essential" ${it.essential ? 'checked' : ''}><span>필수 항목 (가볍게 모드에서도 남아요)</span></label>
+    <label class="chk"><input type="checkbox" name="essential" ${it.essential ? 'checked' : ''}><span>필수 항목 (연속에 들어가고, 가볍게 모드에서도 남아요)</span></label>
+    <label class="fld"><span>신호 (선택)</span><input name="cue" maxlength="20" value="${esc(it.cue || '')}" placeholder="양치한 다음에" autocomplete="off"></label>
+    <p class="hint" style="margin:-6px 0 12px">이미 매일 하는 일 바로 다음에 붙이면 덜 잊어요. 타일과 코치에 보여요.</p>
     <div class="fld2" data-show="count"><label class="fld"><span>하루 목표</span><input name="target" type="number" inputmode="numeric" min="1" max="99" value="${it.target ?? ''}" placeholder="없음"></label><label class="fld"><span>코치 알림 간격 (분)</span><input name="every" type="number" inputmode="numeric" min="10" max="600" value="${it.every ?? ''}" placeholder="없음"></label></div>
     <label class="fld" data-show="count log-num"><span>단위</span><input name="unit" maxlength="4" value="${esc(it.unit || '')}" placeholder="잔, 개, kg" autocomplete="off"></label>
     <label class="fld" data-show="count log-note log-min log-num"><span>누적 목표 (선택)</span><input name="goal" type="number" inputmode="numeric" min="1" max="9999" value="${it.goal?.total ?? ''}" placeholder="예: 30 → 30개 중 몇 개인지 보여줘요"></label>
@@ -708,6 +776,7 @@ function openItemSheet(id, preset) {
         ask,
         block: segv('block'),
         essential: $('#sheet [name="essential"]').checked || undefined,
+        cue: v('cue').trim() || undefined,
         target: type === 'count' ? num('target') : undefined,
         every: type === 'count' ? num('every') : undefined,
         unit: type === 'count' || ask === 'num' ? v('unit').trim() || undefined : undefined,
@@ -849,6 +918,77 @@ async function share(text) {
   }
 }
 
+// ---------- 시각 조절 (시트 안) ----------
+// 시계 다이얼 대신 큰 시각 + 앞뒤로 미는 버튼. 늦게 기록한 걸 맞추는 데 두세 번 탭이면 된다.
+
+let tw = null;
+const STEPS = [[-60, '−1시간'], [-30, '−30분'], [-10, '−10분'], [-5, '−5분'], [5, '+5분'], [10, '+10분'], [30, '+30분'], [60, '+1시간']];
+function twHtml(key, t, presets = []) {
+  const range = timeRange(key);
+  tw = { key, range, t: clampT(Math.round(t / MIN) * MIN, range) };
+  return `<div class="tw"><div class="tw-big"><span id="tw-time">${C.fmtTime(tw.t)}</span><small id="tw-rel">${esc(twRel())}</small></div>
+    <div class="tw-steps">${STEPS.map(([d, l]) => `<button type="button" data-act="tw" data-arg="${d}">${l}</button>`).join('')}</div>
+    ${presets.length ? `<div class="tw-pre">${presets.map(([ts, l]) => `<button type="button" data-act="tw-set" data-arg="${ts}">${esc(l)}</button>`).join('')}</div>` : ''}
+    <label class="fld inline tw-in"><span>직접 입력</span><input type="time" name="time" data-change="tw-input" value="${C.fmtTime(tw.t)}"></label></div>`;
+}
+function twRel() {
+  const parts = [tw.key === todayKey() ? C.ago(tw.t, now()) : C.fmtDate(tw.key)];
+  const w = C.wakeOf(getDay(tw.key));
+  if (w && tw.t >= w) parts.push(`기상 후 ${C.fmtDur((tw.t - w) / MIN)}`);
+  return parts.join(' · ');
+}
+function twSet(t) {
+  if (!tw) return;
+  tw.t = clampT(Math.round(t / MIN) * MIN, tw.range);
+  const a = $('#tw-time'), b = $('#tw-rel'), inp = $('#sheet [name="time"]');
+  if (a) a.textContent = C.fmtTime(tw.t);
+  if (b) b.textContent = twRel();
+  if (inp) inp.value = C.fmtTime(tw.t);
+  haptic(6);
+}
+
+// ---------- 방금 기록 바 ----------
+// 누른 직후 몇 초 동안 아래에 떠서, 평소 시각이나 몇십 분 전으로 한 번에 옮길 수 있다.
+
+let lg = null, lgTimer = 0;
+function showLogged(key, ev) {
+  lg = { key, id: ev.id };
+  $('#toast').hidden = true;
+  bumpLogged();
+  renderLogged();
+}
+function bumpLogged(ms = 7000) {
+  clearTimeout(lgTimer);
+  lgTimer = setTimeout(hideLogged, ms);
+}
+function hideLogged() {
+  clearTimeout(lgTimer);
+  lg = null;
+  const el = $('#logged');
+  if (el && !el.hidden) {
+    el.hidden = true;
+    el.innerHTML = '';
+  }
+}
+const lgEvent = () => (lg ? store.day(lg.key).events.find(e => e.id === lg.id && !e.del) || null : null);
+function renderLogged() {
+  if (!lg) return;
+  const ev = lgEvent();
+  if (!ev) return hideLogged();
+  const key = lg.key, tk = todayKey(), item = itemById(ev.item), it = nameOf(ev.item);
+  const range = timeRange(key), u = usualFor(item, key);
+  const when = key === tk ? '' : key === C.addDays(tk, -1) ? '어제 ' : C.fmtDate(key) + ' ';
+  const extra = item?.type === 'count' ? ` · 오늘 ${C.itemState(store.day(key), item).count}${item.unit || '번'}` : '';
+  const chips = [];
+  if (u && u <= range[1] && Math.abs(u - ev.t) > 5 * MIN) chips.push(`<button class="usual" data-act="lg-at" data-arg="${u}">평소 ${C.fmtTime(u)}</button>`);
+  for (const [d, l] of [[-15, '−15분'], [-30, '−30분'], [-60, '−1시간']]) chips.push(`<button data-act="lg-shift" data-arg="${d}" ${ev.t + d * MIN < range[0] ? 'disabled' : ''}>${l}</button>`);
+  chips.push(`<button data-act="lg-pick">${item?.cat === 'meal' ? '메모·시각' : '더 고치기'}</button>`);
+  const el = $('#logged');
+  el.innerHTML = `<div class="lg-top"><span class="lg-ic" aria-hidden="true">${esc(it.icon)}</span><span class="lg-t">${esc(it.name)} · ${when}<b>${C.fmtTime(ev.t)}</b>${esc(extra)}</span><button class="lg-x" data-act="lg-undo">취소</button><button class="lg-x" data-act="lg-ok" aria-label="확인">${IC.check}</button></div>
+    <div class="lg-chips">${chips.join('')}</div>`;
+  el.hidden = false;
+}
+
 // ---------- 집중 타이머 ----------
 
 let focusTimer = 0, audio = null;
@@ -913,6 +1053,7 @@ function runCoach(a) {
 const actions = {
   tab(arg) {
     ui.tab = arg;
+    hideLogged();
     paint();
     window.scrollTo(0, 0);
   },
@@ -939,15 +1080,76 @@ const actions = {
     ensureSeason();
     haptic(12);
   },
+  'wake-at'(ts) {
+    store.setWake(todayKey(), +ts);
+    ensureSeason();
+    haptic(12);
+  },
+  'wake-ok'() {
+    const key = todayKey(), w = C.wakeOf(store.day(key));
+    if (w) store.setWake(key, w);
+  },
+  // 아까 했는데 기록만 못 한 경우: 평소 시각(없으면 시간대 기준)으로 넣고 바로 고칠 수 있게
+  ago(id) {
+    const it = itemById(id);
+    if (!it) return;
+    const key = todayKey(), day = store.day(key), [lo, hi] = timeRange(key);
+    const guess = usualFor(it, key) ?? C.guessTime(it, day, { key, rollover: rollover() });
+    const t = Math.max(lo, Math.min(hi - MIN, Math.max(C.wakeOf(day) || lo, guess)));
+    afterLog(it, key, store.logEvent(key, id, { t, autoWake: true }));
+  },
+  'retro-yes'(id) {
+    const it = itemById(id);
+    if (!it) return;
+    const key = C.addDays(todayKey(), -1), day = store.day(key);
+    const t = clampT(usualFor(it, key) ?? C.guessTime(it, day, { key, rollover: rollover() }), timeRange(key));
+    afterLog(it, key, store.logEvent(key, id, { t }));
+  },
+  'retro-no'(id) {
+    store.setMiss(C.addDays(todayKey(), -1), id);
+  },
+  'retro-close'() {
+    store.setLocal({ seen: { ...local().seen, ['retro:' + C.addDays(todayKey(), -1)]: 1 } });
+  },
+  'lg-shift'(d) {
+    const ev = lgEvent();
+    if (!ev) return;
+    store.updateEvent(lg.key, ev.id, { t: clampT(Math.round((ev.t + d * MIN) / MIN) * MIN, timeRange(lg.key)) });
+    bumpLogged(9000);
+    haptic(8);
+  },
+  'lg-at'(t) {
+    const ev = lgEvent();
+    if (!ev) return;
+    store.updateEvent(lg.key, ev.id, { t: clampT(+t, timeRange(lg.key)) });
+    bumpLogged(9000);
+    haptic(8);
+  },
+  'lg-pick'() {
+    if (!lg) return;
+    const { key, id } = lg;
+    hideLogged();
+    openEventSheet(id, key);
+  },
+  'lg-undo'() {
+    if (!lg) return;
+    store.deleteEvent(lg.key, lg.id);
+    hideLogged();
+    toast('기록을 취소했어요');
+  },
+  'lg-ok': () => hideLogged(),
+  tw: d => twSet(tw.t + d * MIN),
+  'tw-set': ts => twSet(+ts),
   'time-wake': () => openTimeSheet('wake'),
   'time-sleep': () => openTimeSheet('sleep'),
   tile(id) {
     const it = itemById(id);
     if (!it) return;
-    if (!isToday()) return openTileSheet(id);
-    const s = C.itemState(store.day(todayKey()), it);
-    if (it.type === 'check' && (s.done || s.skipped)) return openTileSheet(id);
-    addAt(it, todayKey());
+    const key = viewKey(), s = C.itemState(store.day(key), it);
+    // 체크한 타일을 누르면 바로 시각 고치기 (늦게 기록한 걸 맞추는 게 제일 흔한 일이라)
+    if (it.type === 'check' && s.done) return openEventSheet(s.evs[s.evs.length - 1].id, key);
+    if (key !== todayKey() || (it.type === 'check' && s.skipped)) return openTileSheet(id);
+    addAt(it, key);
   },
   'tile-menu': id => openTileSheet(id),
   coach(arg) {
@@ -997,7 +1199,7 @@ const actions = {
   report: () => share(C.dayReport(store.day(viewKey()), cfg())),
   'report-season'() {
     const { se, stats } = seasonDays();
-    const lines = [`[시즌 ${se.n} 보고 · ${C.SEASON_DAYS}일 중 ${se.day}일째]`, `기록 ${stats.recorded}일 · 필수 달성 ${stats.essDays}일 · CLEAR ${stats.clearDays}일 · 누적 ${stats.exp} EXP`, `연속 기록 ${C.streak(getDay, todayKey())}일`];
+    const lines = [`[시즌 ${se.n} 보고 · ${C.SEASON_DAYS}일 중 ${se.day}일째]`, `기록 ${stats.recorded}일 · 필수 달성 ${stats.essDays}일 · CLEAR ${stats.clearDays}일 · 누적 ${stats.exp} EXP`, `연속 ${chainNow().n}일`];
     for (const it of C.activeItems(cfg())) if (it.goal?.total) lines.push(`${it.name} ${C.goalCount(it, allDays())}/${it.goal.total}`);
     share(lines.join('\n'));
   },
@@ -1064,6 +1266,7 @@ const actions = {
 };
 
 const changes = {
+  'tw-input': el => tw && el.value && twSet(C.tsFor(tw.key, el.value, rollover())),
   rollover: el => store.setPrefs({ rollover: +el.value }),
   season: el => el.value && store.setPrefs({ seasonStart: el.value }),
   async import(el) {

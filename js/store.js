@@ -113,6 +113,8 @@ export function createStore({ storage, now = Date.now } = {}) {
       const ev = d.events.find(e => e.id === id);
       if (!ev) return null;
       Object.assign(ev, patch, { m });
+      // 기상을 첫 기록으로 짐작했는데 그 기록을 더 이른 시각으로 옮기면 기상도 따라간다
+      if (patch.t != null && d.wake?.auto && patch.t < d.wake.t) d.wake = { t: patch.t, auto: true, m };
       return clean(ev);
     });
   }
@@ -125,12 +127,14 @@ export function createStore({ storage, now = Date.now } = {}) {
       }
     });
   }
-  const setWake = (key, t) => mutDay(key, (d, m) => { d.wake = { t, m }; });
+  const setWake = (key, t, auto) => mutDay(key, (d, m) => { d.wake = auto ? { t, auto: true, m } : { t, m }; });
   const setSleep = (key, t) => mutDay(key, (d, m) => { d.sleep = { t: t || 0, m }; });
   const setReview = (key, r) => mutDay(key, (d, m) => { d.review = r ? { ...r, m } : { off: true, m }; });
   const setLite = (key, on) => mutDay(key, (d, m) => { d.lite = { on: !!on, m }; });
   const setTop3 = (key, id, patch) => mutDay(key, (d, m) => upsert(d.top3, id, patch, m, { text: '', done: 0 }));
-  const setSkip = (key, itemId, on) => mutDay(key, (d, m) => upsert(d.skips, itemId, { on: !!on }, m));
+  const setSkip = (key, itemId, on) => mutDay(key, (d, m) => upsert(d.skips, itemId, { on: !!on, miss: false }, m));
+  // "안 했어요": 어제 정리에서 다시 묻지 않게 표시만 한다 (못 한 날로 남는다)
+  const setMiss = (key, itemId) => mutDay(key, (d, m) => upsert(d.skips, itemId, { on: false, miss: true }, m));
 
   // ----- 설정(항목·장소) -----
   function mutCfg(fn) {
@@ -304,7 +308,7 @@ export function createStore({ storage, now = Date.now } = {}) {
     setLocal,
     failed: () => failed,
     logEvent, updateEvent, deleteEvent,
-    setWake, setSleep, setReview, setLite, setTop3, setSkip,
+    setWake, setSleep, setReview, setLite, setTop3, setSkip, setMiss,
     saveItem, deleteItem, moveItem, setPrefs, savePlace, deletePlace, saveDday, deleteDday,
     doc, applyRemote, markDirty, clearDirty, markAllDirty,
     isDirty: p => local.dirty.includes(p),

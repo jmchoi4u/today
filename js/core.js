@@ -77,6 +77,14 @@ export function tsFor(key, hhmm, rollover = 4) {
   d.setHours(h, m, 0, 0);
   return d.getTime();
 }
+// 논리적 하루가 시작되는 시각 (rollover시)
+export function dayStartTs(key, rollover = 4) {
+  const d = keyToDate(key);
+  d.setHours(rollover, 0, 0, 0);
+  return d.getTime();
+}
+// rollover시부터 몇 분 지났는지 (자정을 넘겨도 이어지게)
+const relMin = (ts, rollover) => (((minutesOfDay(ts) - rollover * 60) % 1440) + 1440) % 1440;
 export function fmtTime(ts) {
   const d = new Date(ts);
   return `${p2(d.getHours())}:${p2(d.getMinutes())}`;
@@ -135,9 +143,15 @@ export function itemState(day, item) {
   const last = count ? evs[count - 1].t : 0;
   const sum = evs.reduce((s, e) => s + (e.min || 0), 0);
   const lastV = count ? evs[count - 1].v : undefined;
-  const skipped = !!(day?.skips || []).find(s => s.id === item.id && s.on);
+  const sk = (day?.skips || []).find(s => s.id === item.id);
+  const skipped = !!sk?.on, missed = !!sk?.miss;
   const done = item.type === 'check' ? count > 0 : item.type === 'count' && item.target ? count >= item.target : false;
-  return { evs, count, last, sum, lastV, skipped, done };
+  return { evs, count, last, sum, lastV, skipped, missed, done };
+}
+// 항목별 연속에 쓰는 그날 상태: 1 해냄, -1 건너뜀(쉬는 날), 0 못 함
+export function itemStatus(day, item) {
+  const s = itemState(day, item);
+  return s.done ? 1 : s.skipped ? -1 : 0;
 }
 
 export const blockIdx = id => BLOCKS.findIndex(b => b.id === id);
@@ -169,6 +183,25 @@ export function progress(day, cfg) {
   return { total, done, essTotal, essDone, essAll: essTotal > 0 && essDone === essTotal };
 }
 export const recorded = day => !!day && (live(day).length > 0 || !!wakeOf(day));
+
+// 하루 전체 상태: 필수를 다 했으면 1. 필수를 일부러 다 건너뛴 날은 -1(쉬는 날). 필수가 없으면 기록만 있어도 1.
+export function dayStatus(day, cfg) {
+  if (!day) return 0;
+  const p = progress(day, cfg);
+  if (p.essTotal > 0) return p.essAll ? 1 : 0;
+  if (activeItems(cfg, day.date).some(it => it.essential && itemState(day, it).skipped)) return -1;
+  return recorded(day) ? 1 : 0;
+}
+
+// 어제 체크되지 않은 필수 (했는데 기록만 못 한 경우를 다음 날 바로잡는다)
+export function retroItems(day, cfg) {
+  if (!day) return [];
+  return activeItems(cfg, day.date).filter(it => {
+    if (!it.essential || it.type !== 'check') return false;
+    const s = itemState(day, it);
+    return !s.done && !s.skipped && !s.missed;
+  });
+}
 
 // ---------- 병합 (기기 간 동기화) ----------
 // 모든 조각에 수정 시각 m이 있고, 같은 id는 m이 큰 쪽이 이긴다. 삭제는 del 표시로 남겨 되살아나지 않게 한다.
@@ -255,6 +288,66 @@ export function streak(getDay, todayKey) {
     k = addDays(k, -1);
   }
   return n;
+}
+
+// 연속: 하루는 빠져도 이어지고, 이틀 연속으로 빠지면 끊긴다.
+// st(key)는 1 해냄, 0 못 함, -1 쉬는 날(끊지도 늘리지도 않음), null 기록을 시작하기 전.
+function runBack(st, key, limit = 3650) {
+  let n = 0, gap = 0;
+  for (let i = 0; i < limit; i++, key = addDays(key, -1)) {
+    const s = st(key);
+    if (s === null || s === undefined) break;
+    if (s === 1) {
+      n++;
+      gap = 0;
+    } else if (s === 0 && ++gap >= 2) break;
+  }
+  return n;
+}
+export function chainInfo(st, todayKey) {
+  const y = addDays(todayKey, -1);
+  const today = st(todayKey) === 1;
+  const past = runBack(st, y);
+  const out = { n: (today ? 1 : 0) + past, today, atRisk: !today && st(y) === 0 && past > 0, comeback: 0 };
+  // 끊긴 뒤 다시 온 날: 지난번 연속이 얼마였는지 알려준다
+  if (!today && past === 0) {
+    let k = y;
+    for (let i = 0; i < 60; i++, k = addDays(k, -1)) {
+      const s = st(k);
+      if (s === null || s === undefined) break;
+      if (s === 1) {
+        out.comeback = runBack(st, k);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+// 평소 이 항목을 한 시각. 기상 기록이 있으면 "기상 후 몇 분"의 중앙값을 그날 기상에 더한다.
+export function usualTime(item, days, { wake = 0, key, rollover = 4 } = {}) {
+  const offs = [], rels = [];
+  for (const d of days) {
+    if (!d || d.date === key) continue;
+    const ev = live(d).find(e => e.item === item.id);
+    if (!ev) continue;
+    rels.push(relMin(ev.t, rollover));
+    if (wakeOf(d) && ev.t >= wakeOf(d)) offs.push(ev.t - wakeOf(d));
+  }
+  const med = xs => xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+  if (wake && offs.length >= 3) return wake + med(offs);
+  if (rels.length >= 3) return dayStartTs(key, rollover) + med(rels) * MIN;
+  return null;
+}
+
+// 기록이 쌓이기 전에 "아까 했어요"가 쓸 시각: 그날 기상 기준, 기상도 없으면 시간대별 보통 시각
+const FALLBACK_MIN = { am: 9 * 60, day: 13 * 60, pm: 19 * 60, night: 23 * 60 + 30, any: 12 * 60 };
+export function guessTime(item, day, { key, rollover = 4 } = {}) {
+  const w = wakeOf(day);
+  const i = blockIdx(item.block);
+  if (w) return w + (i < 0 ? 1 : BLOCKS[i].from + (i === 0 ? 0.25 : 0.5)) * HOUR;
+  const m = FALLBACK_MIN[item.block] ?? 12 * 60;
+  return dayStartTs(key, rollover) + ((((m - rollover * 60) % 1440) + 1440) % 1440) * MIN;
 }
 
 // 평소 기상 시각(자정부터 분). 표본이 3일 미만이면 null.
@@ -408,7 +501,7 @@ export function dayReport(day, cfg) {
 // ---------- 코치 ----------
 // 지금 상태를 보고 제안을 우선순위 순으로 돌려준다. 맨 앞 하나가 화면에 나온다.
 
-export function coach({ now, day, cfg, local = {}, typical = null }) {
+export function coach({ now, day, cfg, local = {}, typical = null, chain = null }) {
   const wake = wakeOf(day);
   if (!wake) {
     return [{ pri: 0, key: 'start', icon: '☀️', tone: 'now', title: '하루를 시작해 볼까요?', sub: '일어난 시간만 알려주면 오늘 흐름을 거기에 맞출게요' }];
@@ -428,6 +521,26 @@ export function coach({ now, day, cfg, local = {}, typical = null }) {
   const lite = isLite(day);
   const evs = live(day);
 
+  // 0) 기상 시각을 첫 기록으로 짐작한 경우: 한 번만 확인
+  if (day.wake?.auto && hrs < 10) {
+    push(6, {
+      key: 'wake-auto',
+      icon: '☀️',
+      tone: 'calm',
+      title: `일어난 시각이 ${fmtTime(wake)} 맞아요?`,
+      sub: '첫 기록 시각으로 잡았어요. 고치면 시간대가 그에 맞춰져요',
+      action: { label: '고치기', act: 'time-wake' },
+      alt: { label: '맞아요', act: 'wake-ok' },
+    });
+  }
+
+  // 연속이 걸린 날은 필수 제안에 그 이야기를 붙인다
+  let chainSub = '';
+  if (chain && !chain.today) {
+    if (chain.atRisk) chainSub = `어제는 쉬었어요. 오늘 필수를 하면 🔥${chain.n}일이 이어져요`;
+    else if (chain.comeback >= 2) chainSub = `다시 시작하는 날이에요. 지난번엔 🔥${chain.comeback}일 이어갔어요`;
+  }
+
   // 1) 지금 시간대이거나 앞 시간대에서 넘어온 체크 항목
   let n = 0;
   for (const it of items) {
@@ -437,13 +550,18 @@ export function coach({ now, day, cfg, local = {}, typical = null }) {
     const bi = blockIdx(it.block);
     if (bi > ci || (lite && !it.essential)) continue;
     const late = bi < ci;
+    const verb = it.cat === 'med' ? '먹었어요' : '했어요';
+    // 시간대가 시작되고 20분이 지났으면 "아까 했는데 기록만 못 한" 경우를 바로 받아준다
+    const ago = now - Math.max(wake, blockStart(day, it.block)) >= 20 * MIN;
+    const base = late ? `${BLOCK_NAMES[it.block]} 루틴에서 넘어왔어요. 지금 해도 충분해요` : it.cue || `${BLOCK_NAMES[it.block]} 루틴`;
     push((it.essential ? 10 : 30) + (late ? 0 : 2) + n++ * 0.01, {
       key: 'do:' + it.id,
       icon: it.icon,
-      title: it.cat === 'med' ? `${it.name} 챙길 시간이에요` : `${it.name} 할 차례예요`,
-      sub: late ? `${BLOCK_NAMES[it.block]} 루틴에서 넘어왔어요. 지금 해도 충분해요` : `${BLOCK_NAMES[it.block]} 루틴`,
-      action: { label: it.cat === 'med' ? '먹었어요' : '했어요', act: 'check', arg: it.id },
-      alt: { label: '오늘은 건너뛰기', act: 'skip', arg: it.id },
+      // 지난 시간대에서 넘어왔으면 이미 했을 수도 있으니 묻는다
+      title: late ? `${it.name} ${verb.replace('어요', '어요?')}` : it.cat === 'med' ? `${it.name} 챙길 시간이에요` : `${it.name} 할 차례예요`,
+      sub: (it.essential && chainSub) || base,
+      action: { label: '방금 ' + verb, act: 'check', arg: it.id },
+      alt: ago ? { label: '아까 ' + verb, act: 'ago', arg: it.id } : { label: '오늘은 건너뛰기', act: 'skip', arg: it.id },
     });
   }
 

@@ -101,7 +101,8 @@ test('코치: 필수 약이 먼저, 먹으면 다음 제안으로 넘어간다',
   now.tick(10 * MIN);
   let list = coachNow(store, key, now);
   assert.equal(list[0].key, 'do:med_am');
-  assert.deepEqual(list[0].action, { label: '먹었어요', act: 'check', arg: 'med_am' });
+  assert.deepEqual(list[0].action, { label: '방금 먹었어요', act: 'check', arg: 'med_am' });
+  assert.equal(list[0].alt.act, 'skip', '일어나자마자는 "아까"를 묻지 않는다');
   store.logEvent(key, 'med_am');
   list = coachNow(store, key, now);
   assert.notEqual(list[0].key, 'do:med_am');
@@ -114,7 +115,9 @@ test('코치: 못 한 필수 항목은 다음 시간대로 넘어와 맨 앞에 
   now.set(at(13, 30));
   const list = coachNow(store, key, now);
   assert.equal(list[0].key, 'do:med_am');
+  assert.equal(list[0].title, '아침 약 먹었어요?', '넘어온 항목은 했는지 묻는다');
   assert.match(list[0].sub, /넘어왔어요/);
+  assert.equal(list[0].alt.label, '아까 먹었어요');
   store.setSkip(key, 'med_am', true);
   assert.ok(!coachNow(store, key, now).some(s => s.key === 'do:med_am'), '건너뛰면 더 권하지 않는다');
 });
@@ -302,10 +305,138 @@ test('하루 보고는 사람이 읽을 수 있는 몇 줄이다', () => {
 test('설정 병합: D-day도 기기 사이에 전달된다', () => {
   const a = C.defaultConfig(0), b = C.defaultConfig(0);
   a.ddays.push({ id: 'd1', label: '시험', to: '2026-12-01', m: 10 });
-  b.ddays.push({ id: 'd1', label: '시험', to: '2026-12-05', m: 20 }, { id: 'd2', label: '마감', to: '2026-12-27', m: 5 });
+  b.ddays.push({ id: 'd1', label: '시험', to: '2026-12-05', m: 20 }, { id: 'd2', label: '마감', to: '2026-07-31', m: 5 });
   const m = C.mergeConfig(a, b);
-  assert.deepEqual(m.ddays.map(d => [d.id, d.to]), [['d1', '2026-12-05'], ['d2', '2026-12-27']]);
+  assert.deepEqual(m.ddays.map(d => [d.id, d.to]), [['d1', '2026-12-05'], ['d2', '2026-07-31']]);
   assert.equal(C.mergeConfig({ v: 1, items: [], places: [], prefs: { m: 1 } }, b).ddays.length, 2, '예전 형식에도 안전하다');
+});
+
+test('연속: 하루 빠져도 이어지고, 이틀 연속으로 빠지면 끊긴다', () => {
+  const S = map => k => (k in map ? map[k] : null);
+  const T = '2026-11-12';
+  // 9일 하루 빠짐 → 그대로 이어짐 (해낸 날만 센다)
+  let c = C.chainInfo(S({ '2026-11-08': 1, '2026-11-09': 0, '2026-11-10': 1, '2026-11-11': 1, [T]: 0 }), T);
+  assert.deepEqual(c, { n: 3, today: false, atRisk: false, comeback: 0 });
+  // 어제 빠짐 → 오늘 하면 이어진다
+  c = C.chainInfo(S({ '2026-11-09': 1, '2026-11-10': 1, '2026-11-11': 0, [T]: 0 }), T);
+  assert.deepEqual(c, { n: 2, today: false, atRisk: true, comeback: 0 });
+  c = C.chainInfo(S({ '2026-11-09': 1, '2026-11-10': 1, '2026-11-11': 0, [T]: 1 }), T);
+  assert.deepEqual([c.n, c.atRisk], [3, false]);
+  // 이틀 연속 빠짐 → 끊김. 돌아온 날은 지난번 길이를 알려준다
+  c = C.chainInfo(S({ '2026-11-07': 1, '2026-11-08': 1, '2026-11-09': 1, '2026-11-10': 0, '2026-11-11': 0, [T]: 0 }), T);
+  assert.deepEqual(c, { n: 0, today: false, atRisk: false, comeback: 3 });
+  c = C.chainInfo(S({ '2026-11-07': 1, '2026-11-08': 1, '2026-11-09': 1, '2026-11-10': 0, '2026-11-11': 0, [T]: 1 }), T);
+  assert.deepEqual([c.n, c.comeback], [1, 0], '오늘 하면 1부터 다시');
+  // 쉬는 날(-1)은 끊지도 늘리지도 않는다
+  c = C.chainInfo(S({ '2026-11-09': 1, '2026-11-10': -1, '2026-11-11': -1, [T]: 1 }), T);
+  assert.equal(c.n, 2);
+  // 기록을 시작하기 전(null)에서 멈춘다
+  assert.equal(C.chainInfo(S({ [T]: 1 }), T).n, 1);
+});
+
+test('하루 상태: 필수를 다 해야 1, 필수를 일부러 다 건너뛰면 쉬는 날', () => {
+  const { store, key } = setup();
+  const cfg = store.config();
+  assert.equal(C.dayStatus(null, cfg), 0);
+  store.logEvent(key, 'med_am', { autoWake: true });
+  assert.equal(C.dayStatus(store.day(key), cfg), 0, '저녁 약이 남았다');
+  store.logEvent(key, 'med_pm');
+  assert.equal(C.dayStatus(store.day(key), cfg), 1);
+  const k2 = '2026-11-13';
+  store.setSkip(k2, 'med_am', true);
+  store.setSkip(k2, 'med_pm', true);
+  assert.equal(C.dayStatus(store.day(k2), cfg), -1);
+});
+
+test('평소 시각: 기상 후 몇 분인지의 중앙값을 오늘 기상에 더한다', () => {
+  const { store } = setup(at(8, 0, 9));
+  for (const [d, m] of [[9, 20], [10, 30], [11, 40]]) {
+    const k = `2026-11-${String(d).padStart(2, '0')}`;
+    store.setWake(k, at(8, 0, d));
+    store.logEvent(k, 'med_am', { t: at(8, m, d) });
+  }
+  const med = store.config().items.find(i => i.id === 'med_am');
+  const hist = ['2026-11-09', '2026-11-10', '2026-11-11'].map(k => store.day(k));
+  assert.equal(C.usualTime(med, hist, { wake: at(10, 0), key: '2026-11-12' }), at(10, 30), '늦게 일어난 날은 그만큼 늦게');
+  assert.equal(C.usualTime(med, hist, { key: '2026-11-12' }), at(8, 30), '오늘 기상이 없으면 평소 시계 시각');
+  assert.equal(C.usualTime(med, hist.slice(0, 2), { key: '2026-11-12' }), null, '표본이 3일 미만이면 모른다');
+});
+
+test('평소 시각: 자정을 넘기는 기록도 이어서 계산한다', () => {
+  const { store } = setup(at(9, 0, 9));
+  const lights = { id: 'lights', type: 'check' };
+  for (const [d, h, m] of [[9, 23, 50], [10, 0, 10], [11, 0, 30]]) {
+    const k = `2026-11-${String(d).padStart(2, '0')}`;
+    store.logEvent(k, 'lights', { t: C.tsFor(k, `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`) });
+  }
+  const hist = ['2026-11-09', '2026-11-10', '2026-11-11'].map(k => store.day(k));
+  assert.equal(C.usualTime(lights, hist, { key: '2026-11-12' }), at(0, 10, 13));
+});
+
+test('기록이 쌓이기 전 짐작 시각: 기상 기준, 기상도 없으면 시간대 기준', () => {
+  const am = { block: 'am' }, pm = { block: 'pm' }, night = { block: 'night' };
+  const day = { ...C.newDay('2026-11-12'), wake: { t: at(10), m: 1 } };
+  assert.equal(C.guessTime(am, day, { key: '2026-11-12' }), at(10, 15));
+  assert.equal(C.guessTime(pm, day, { key: '2026-11-12' }), at(19, 30));
+  assert.equal(C.guessTime(am, C.newDay('2026-11-12'), { key: '2026-11-12' }), at(9));
+  assert.equal(C.guessTime(night, C.newDay('2026-11-12'), { key: '2026-11-12' }), at(23, 30));
+});
+
+test('어제 정리: 체크 안 된 필수만 묻고, 했다·못 했다·건너뜀이면 빠진다', () => {
+  const { store } = setup(at(9, 0, 11));
+  const k = '2026-11-11', cfg = store.config();
+  store.logEvent(k, 'med_am', { autoWake: true });
+  assert.deepEqual(C.retroItems(store.day(k), cfg).map(i => i.id), ['med_pm']);
+  store.setMiss(k, 'med_pm');
+  assert.deepEqual(C.retroItems(store.day(k), cfg), []);
+  assert.equal(C.dayStatus(store.day(k), cfg), 0, '못 했다고 하면 못 한 날로 남는다');
+  store.setSkip(k, 'med_pm', false);
+  assert.deepEqual(C.retroItems(store.day(k), cfg).map(i => i.id), ['med_pm']);
+  store.logEvent(k, 'med_pm', { t: at(20, 0, 11) });
+  assert.deepEqual(C.retroItems(store.day(k), cfg), []);
+  assert.equal(C.dayStatus(store.day(k), cfg), 1, '했다고 하면 그날은 해낸 날');
+});
+
+test('늦게 고친 시각: 기상을 첫 기록으로 짐작했으면 더 이른 시각으로 따라간다', () => {
+  const { store, key } = setup(at(10, 2));
+  const ev = store.logEvent(key, 'med_am', { autoWake: true });
+  assert.deepEqual([C.wakeOf(store.day(key)), store.day(key).wake.auto], [at(10, 2), true]);
+  store.updateEvent(key, ev.id, { t: at(8, 30) });
+  assert.deepEqual([C.wakeOf(store.day(key)), store.day(key).wake.auto], [at(8, 30), true]);
+  store.setWake(key, at(9));
+  store.updateEvent(key, ev.id, { t: at(8) });
+  assert.equal(C.wakeOf(store.day(key)), at(9), '직접 정한 기상은 건드리지 않는다');
+});
+
+test('코치: 시간대가 한참 지났으면 "아까 먹었어요"를 함께 준다', () => {
+  const { store, key, now } = setup();
+  store.setWake(key, at(8));
+  now.set(at(8, 40));
+  const s = coachNow(store, key, now).find(x => x.key === 'do:med_am');
+  assert.deepEqual(s.alt, { label: '아까 먹었어요', act: 'ago', arg: 'med_am' });
+});
+
+test('코치: 기상을 첫 기록으로 짐작했으면 맞는지 먼저 묻는다', () => {
+  const { store, key, now } = setup(at(10, 2));
+  store.logEvent(key, 'med_am', { autoWake: true });
+  const s = coachNow(store, key, now)[0];
+  assert.equal(s.key, 'wake-auto');
+  assert.deepEqual([s.action.act, s.alt.act], ['time-wake', 'wake-ok']);
+  store.setWake(key, at(8));
+  assert.notEqual(coachNow(store, key, now)[0].key, 'wake-auto');
+});
+
+test('코치: 어제 빠진 날은 필수 제안에 연속 이야기를 붙인다', () => {
+  const { store, key, now } = setup();
+  store.setWake(key, at(8));
+  now.tick(5 * MIN);
+  const atRisk = { n: 4, today: false, atRisk: true, comeback: 0 };
+  assert.match(coachNow(store, key, now, { chain: atRisk })[0].sub, /오늘 필수를 하면 🔥4일이 이어져요/);
+  const back = { n: 0, today: false, atRisk: false, comeback: 6 };
+  assert.match(coachNow(store, key, now, { chain: back })[0].sub, /지난번엔 🔥6일/);
+  store.saveItem({ ...store.config().items.find(i => i.id === 'stretch'), cue: '양치한 다음에' });
+  store.logEvent(key, 'med_am');
+  assert.equal(coachNow(store, key, now).find(x => x.key === 'do:stretch').sub, '양치한 다음에', '신호가 있으면 신호를 보여준다');
 });
 
 test('장소: 반경 안의 가장 가까운 곳을 고른다', () => {
