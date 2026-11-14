@@ -12,6 +12,12 @@ import { createTelegram } from './lib/telegram.mjs';
 import { createLLM } from './lib/llm.mjs';
 import { createBot, newPairCode } from './lib/bot.mjs';
 
+// 업데이트 전에 "이 코드가 불러와지는지"만 확인할 때: node main.mjs --selftest
+if (process.argv.includes('--selftest')) {
+  console.log('ok');
+  process.exit(0);
+}
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.join(here, 'data');
 fs.mkdirSync(dataDir, { recursive: true });
@@ -31,7 +37,7 @@ function log(...parts) {
 }
 
 // ----- 설정 -----
-const KEYS = ['TELEGRAM_BOT_TOKEN', 'GITHUB_REPO', 'GITHUB_TOKEN', 'LLM_PROVIDER', 'GEMINI_API_KEY', 'GEMINI_MODEL', 'ANTHROPIC_API_KEY', 'CLAUDE_MODEL', 'WAKE_WEEKDAY', 'WAKE_WEEKEND', 'QUIET_FROM', 'QUIET_TO', 'APP_URL'];
+const KEYS = ['TELEGRAM_BOT_TOKEN', 'GITHUB_REPO', 'GITHUB_TOKEN', 'LLM_PROVIDER', 'GEMINI_API_KEY', 'GEMINI_MODEL', 'ANTHROPIC_API_KEY', 'CLAUDE_MODEL', 'WAKE_WEEKDAY', 'WAKE_WEEKEND', 'QUIET_FROM', 'QUIET_TO', 'APP_URL', 'AUTO_UPDATE'];
 const env = { ...loadEnv(path.join(here, '.env')) };
 for (const k of KEYS) if (process.env[k]) env[k] = process.env[k]; // 환경 변수가 있으면 그쪽이 먼저
 const need = ['TELEGRAM_BOT_TOKEN', 'GITHUB_TOKEN', 'GITHUB_REPO'].filter(k => !env[k]);
@@ -137,6 +143,17 @@ const llm = createLLM({
   claudeKey: env.ANTHROPIC_API_KEY,
   claudeModel: env.CLAUDE_MODEL || 'claude-opus-5-5',
 });
+// 감시 프로그램(supervisor.mjs) 아래에서 돌 때만 /update를 받는다
+const supervised = process.env.TODAY_SUPERVISED === '1';
+const version = () => {
+  try {
+    return fs.readFileSync(path.join(dataDir, 'version.txt'), 'utf8').trim().slice(0, 7);
+  } catch {
+    return '';
+  }
+};
+opts.version = version;
+if (supervised) opts.requestUpdate = () => fs.writeFileSync(path.join(dataDir, 'update.flag'), '1');
 const bot = createBot({ store, sync, tg, llm, state, save, log, opts });
 
 let running = true;
@@ -221,6 +238,20 @@ async function main() {
   }
 
   // 30초마다 먼저 말 걸 것 확인 (겹쳐 돌지 않게)
+  // 감시 프로그램이 남긴 말(업데이트 결과)을 전하고, "꺼 줘" 표시가 있으면 깔끔하게 끈다
+  setInterval(async () => {
+    if (fs.existsSync(path.join(dataDir, 'stop.flag'))) return shutdown();
+    const nf = path.join(dataDir, 'notice.txt');
+    if (!state.owner || !fs.existsSync(nf)) return;
+    try {
+      const text = fs.readFileSync(nf, 'utf8').trim();
+      fs.unlinkSync(nf);
+      if (text) await tg.send(state.owner, `🔄 ${text}`);
+    } catch (e) {
+      log('알림 전달 실패', e.message);
+    }
+  }, 2000);
+
   let ticking = false;
   setInterval(async () => {
     try {

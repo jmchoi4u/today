@@ -93,7 +93,8 @@ $lines = @(
   "WAKE_WEEKEND=$we",
   "QUIET_FROM=$(Def 'QUIET_FROM' '01:00')",
   "QUIET_TO=$(Def 'QUIET_TO' '06:30')",
-  "APP_URL=$(Def 'APP_URL' 'https://jmchoi4u.github.io/today/')"
+  "APP_URL=$(Def 'APP_URL' 'https://jmchoi4u.github.io/today/')",
+  "AUTO_UPDATE=$(Def 'AUTO_UPDATE' 'on')"
 )
 [IO.File]::WriteAllLines($envFile, $lines, (New-Object Text.UTF8Encoding $false))
 # 이 계정만 읽을 수 있게
@@ -118,10 +119,24 @@ if ($LASTEXITCODE -ne 0) {
 
 # 5) 자동 시작 등록 (작업 스케줄러 "TodayBot")
 $nodeExe = (Get-Command node).Source
-$main = Join-Path $here 'main.mjs'
+# 자동 시작은 감시 프로그램을 켠다: 비서를 켜 두고, 죽으면 다시 켜고, 새 버전을 받아 온다
+$main = Join-Path $here 'supervisor.mjs'
 $user = "$env:USERDOMAIN\$env:USERNAME"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
 try { Stop-ScheduledTask -TaskName 'TodayBot' -ErrorAction SilentlyContinue } catch {}
+# 돌고 있던 감시 프로그램과 비서를 끈다 (기록해 둔 번호가 node일 때만)
+foreach ($f in @('data\supervisor.pid', 'data\bot.lock')) {
+  $pf = Join-Path $here $f
+  if (Test-Path $pf) {
+    $oldPid = 0
+    try { [void][int]::TryParse([string](Get-Content $pf -Raw), [ref]$oldPid) } catch {}
+    if ($oldPid -gt 0) {
+      $p = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
+      if ($p -and $p.ProcessName -eq 'node') { Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue }
+    }
+    Remove-Item $pf -ErrorAction SilentlyContinue
+  }
+}
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $registered = $false
 if ($isAdmin) {
@@ -166,4 +181,5 @@ if (Test-Path $pair) {
   Say '연결 코드가 아직 안 나왔어요. 잠시 뒤 bot\data\PAIRING.txt 파일을 열어 보세요.' 'Yellow'
 }
 Say ''
+Say '새 버전은 10분마다 알아서 받아요. 바로 받으려면 텔레그램에서 /update' 'DarkGray'
 Say '끄기: uninstall.cmd / 다시 설정: install.cmd / 기록: bot\data\bot.log' 'DarkGray'

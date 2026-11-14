@@ -20,7 +20,7 @@ export const HELP = [
   '· 불편: … → 사장님 불편 한 줄',
   '· 약 먹었어 / 일어났어 / 나왔어',
   '· 오늘 → 지금 상태',
-  '명령: /focus 50 (집중 타이머), /stop, /pause (오늘 알림 끄기), /resume',
+  '명령: /focus 50 (집중 타이머), /stop, /pause (오늘 알림 끄기), /resume, /update (새 버전 받기)',
 ].join('\n');
 
 export function newPairCode() {
@@ -279,6 +279,11 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
         state.paused = key;
         save();
         return say('🔕 오늘은 먼저 말 걸지 않을게요. 내일 아침에 다시 켜져요. (/resume)');
+      }
+      if (c === 'update') {
+        if (!opts.requestUpdate) return say('자동 업데이트 없이 켜져 있어요. install.cmd를 다시 실행하면 켜져요.');
+        opts.requestUpdate();
+        return say(`새 버전이 있는지 볼게요.${opts.version?.() ? ` (지금 ${opts.version()})` : ''}`);
       }
       if (c === 'resume') {
         state.paused = null;
