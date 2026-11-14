@@ -1,0 +1,14 @@
+{
+  "name": "today-bot",
+  "private": true,
+  "type": "module",
+  "description": "오늘 비서: 텔레그램으로 마감과 루틴을 챙기는 개인 봇",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node main.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^1.8.0"
+  }
+}

@@ -1,0 +1,4 @@
+# 비밀 값과 기기 안 기록은 절대 올리지 않는다
+.env
+data/
+node_modules/

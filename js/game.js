@@ -197,10 +197,17 @@ export const DEFAULT_ROUTINE = [
   { id: 'phone', text: '폰은 손 닿지 않는 곳에', check: 'manual' },
   { id: 'focus', text: '첫 집중 25분', check: 'focus' },
 ];
+// game.json 규칙의 날짜 조건: days(weekday/weekend), from, to.
+// from/to는 날짜 모양일 때만 날짜로 본다 (시간표 칸의 to "18:00"은 끝 시각이라서)
+export const isDateKey = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+export const isWeekend = key => [0, 6].includes(C.keyToDate(key).getDay());
+export function inDay(x, key) {
+  return (!x.days || (x.days === 'weekend') === isWeekend(key)) && (!isDateKey(x.from) || key >= x.from) && (!isDateKey(x.to) || key <= x.to);
+}
+
 // 평일(출근)과 주말에 다른 단계: days가 'weekday'면 월~금, 'weekend'면 토·일에만
 export function routineFor(steps, dateKey) {
-  const wd = C.keyToDate(dateKey).getDay(), weekend = wd === 0 || wd === 6;
-  return (steps || DEFAULT_ROUTINE).filter(s => !s.days || (s.days === 'weekend') === weekend);
+  return (steps || DEFAULT_ROUTINE).filter(s => !s.days || (s.days === 'weekend') === isWeekend(dateKey));
 }
 export function routineState(steps, day, { focusOn = false } = {}) {
   const evs = day ? C.live(day) : [];

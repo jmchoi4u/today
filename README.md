@@ -19,6 +19,10 @@
 - 설정에서 본인의 **비공개** GitHub 저장소를 연결하면 `config.json`과 `days/연도/날짜.json`으로 동기화됩니다. 공개 저장소는 연결되지 않습니다.
 - 토큰은 그 기기에만 저장되고 어디로도 전송되지 않습니다 (GitHub API 호출 제외).
 
+## 오늘 비서 (텔레그램)
+
+집에 켜 둔 Windows PC에서 24시간 돌면서, 정한 시각에 텔레그램으로 먼저 말을 거는 비서가 `bot/` 폴더에 있습니다. 아침 루틴 단계, 외부 마감, 예정 약, 약 효과 최고 구간, 저녁 규칙을 챙기고, 답은 앱과 같은 비공개 저장소에 기록합니다. 설치는 [bot/README.md](bot/README.md)를 보세요.
+
 ## 개발
 
 빌드 과정이 없는 정적 파일입니다.
@@ -28,5 +32,5 @@ python3 -m http.server 4173
 ```
 
 ```bash
-node --test tests/core.test.mjs tests/sync.test.mjs
+node --test tests/*.test.mjs bot/test/*.test.mjs
 ```

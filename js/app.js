@@ -7,7 +7,7 @@ import * as PK from './pk.js';
 import * as GM from './game.js';
 import * as WX from './weather.js';
 
-const VERSION = '1.6';
+const VERSION = '1.6.1';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -609,8 +609,7 @@ function todayHtml() {
 
 // game.json 규칙의 날짜 조건: days(weekday/weekend), from, to
 // (from/to는 날짜 모양일 때만 날짜로 본다: 시간표 칸의 to "18:00"은 끝 시각이라서)
-const isDateKey = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
-const inDay = (x, key) => (!x.days || (x.days === 'weekend') === [0, 6].includes(C.keyToDate(key).getDay())) && (!isDateKey(x.from) || key >= x.from) && (!isDateKey(x.to) || key <= x.to);
+const inDay = GM.inDay;
 // "HH:MM"을 하루 시작(새벽 rollover)부터 지난 분으로: 23:30 < 01:00이 되게
 const relMin = hhmm => {
   const [h, m] = String(hhmm).split(':').map(Number);
