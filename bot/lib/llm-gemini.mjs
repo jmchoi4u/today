@@ -1,6 +1,6 @@
 // Gemini API (REST). 키는 주소가 아니라 헤더로 보내서 기록에 남지 않게 한다.
 // 무료 등급에서는 보낸 내용이 Google의 제품 개선에 쓰일 수 있다 (README에 적어 둠).
-export async function geminiJSON({ apiKey, model = 'gemini-flash-latest', system, user, schema, fetchFn = globalThis.fetch, timeoutMs = 25000 }) {
+export async function geminiJSON({ apiKey, model = 'gemini-flash-latest', system, user, schema, fetchFn = globalThis.fetch, timeoutMs = 60000 }) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model || 'gemini-flash-latest')}:generateContent`;
   const body = {
     systemInstruction: { parts: [{ text: `${system}\n\n답은 다음 JSON 스키마를 따르는 JSON 하나만:\n${JSON.stringify(schema)}` }] },

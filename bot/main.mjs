@@ -181,8 +181,8 @@ async function check() {
       await llm.parse('오늘 상태 알려 줘', { key: 'check', nowText: '점검', items: [], top3: [] });
       console.log(`[OK] AI (${llm.provider})`);
     } catch (e) {
-      ok = false;
-      console.log(`[X] AI (${llm.provider}): ${e.message}`);
+      // AI는 없어도 비서가 돈다 (규칙으로 알아듣는 말은 그대로 처리). 설치를 막지 않고 알려만 준다
+      console.log(`[!] AI (${llm.provider}): ${e.message}. 지금은 AI 없이 켜고, 나중에 check.cmd로 다시 확인해요.`);
     }
   }
   console.log(state.owner ? '[OK] 텔레그램 대화와 연결돼 있어요' : '[-] 아직 텔레그램과 연결 전이에요 (설치가 끝나면 코드를 알려 드려요)');
