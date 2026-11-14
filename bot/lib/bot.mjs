@@ -87,6 +87,8 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
     const same = list.find(t => t.text === text && !t.done);
     const id = same?.id || ['t1', 't2', 't3'].find(x => !list.some(t => t.id === x));
     if (!id) return { error: '핵심 3가지가 꽉 찼어요. 하나를 끝내거나 앱에서 비우고 다시 보내 주세요.' };
+    // 같은 일을 다시 말했는데 새 마감이 없으면 기존 마감을 건드리지 않는다
+    if (same && !due) return { id, kept: !!same.due };
     store.setTop3(key, id, { text, due: due || 0, done: 0 });
     push();
     return { id };
@@ -109,6 +111,14 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
           lines.push('그 항목을 앱 설정에서 찾지 못했어요.');
           continue;
         }
+        if (it.cat === 'med') {
+          lines.push(logMed(key, it.id));
+          continue;
+        }
+        if (it.type === 'check' && C.itemState(store.day(key), it).count) {
+          lines.push(`${it.name}은 이미 기록돼 있어요.`);
+          continue;
+        }
         store.logEvent(key, it.id, { note: a.note || undefined, autoWake: true });
         push();
         const n = C.live(store.day(key)).filter(e => e.item === it.id).length;
@@ -126,6 +136,10 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
         const r = setTop3(a.text, due, k);
         if (r.error) {
           lines.push(r.error);
+          continue;
+        }
+        if (r.kept) {
+          lines.push(`"${a.text}"은 이미 있어요. 마감은 그대로 둘게요.`);
           continue;
         }
         if (due) lines.push(`🎯 ${k !== key ? '내일 ' : ''}"${a.text}" ${fmt(due)} 마감으로 잡았어요. 30분 전에 알려 드릴게요.`);
@@ -283,7 +297,7 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
         const r = await llm.parse(t, {
           key,
           nowText: `${C.fmtDate(key)} ${fmt(now())}`,
-          items: items(key).map(i => ({ id: i.id, name: i.name })),
+          items: items(key).filter(i => i.cat !== 'med').map(i => ({ id: i.id, name: i.name })), // 약 항목은 AI에게 보내지 않는다
           top3: C.top3Of(day).map(x => ({ id: x.id, text: x.text, due: x.due ? fmt(x.due) : '', done: !!x.done })),
         });
         if (r) {
@@ -306,6 +320,13 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
     let toast = '';
     let reply = '';
     const [kind, a, b] = data.split(':');
+    // 어제 알림의 버튼으로 오늘 기록을 바꾸지 않는다
+    const msgKey = q.message?.date ? C.dayKey(q.message.date * 1000, R()) : key;
+    if (msgKey !== key && kind !== 'noop') {
+      await tg.answer(q.id, '지난 알림이에요').catch(() => {});
+      if (q.message?.message_id) tg.clearButtons(state.owner, q.message.message_id).catch(() => {});
+      return;
+    }
     if (kind === 'wake') reply = await apply([{ type: 'wake' }]);
     else if (kind === 'log') {
       const it = itemById(a, key);

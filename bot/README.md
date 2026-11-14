@@ -24,7 +24,7 @@
 
 ### 설치
 
-1. 미니 PC에서 [이 저장소 ZIP](https://github.com/jmchoi4u/today/archive/refs/heads/main.zip)을 받아 원하는 곳(예: `C:\today`)에 압축을 풀어요.
+1. 미니 PC에서 [이 저장소 ZIP](https://github.com/jmchoi4u/today/archive/refs/heads/main.zip)을 받아 **내 사용자 폴더 안**(예: `C:\Users\내이름\today`)에 압축을 풀어요. `C:\today`처럼 바깥에 두면 PC의 다른 계정도 기록을 볼 수 있어요.
 2. `bot` 폴더의 **`install.cmd`** 를 더블클릭해요.
    - Node.js가 없으면 설치해 줘요. 설치 후 창을 닫고 `install.cmd`를 한 번 더 실행해요.
    - 준비물 3개를 붙여 넣어요 (입력하는 글자는 화면에 안 보여요).
@@ -54,7 +54,7 @@
 
 - **Gemini 무료 등급**은 돈이 들지 않지만, 보낸 내용이 Google의 제품 개선에 쓰일 수 있어요. 그래서 AI에게는 **항목 이름과 오늘 핵심, 그 메시지만** 보내고 약 정보(성분·곡선)나 메모 기록은 보내지 않아요.
 - 더 조심하고 싶으면 `.env`에서 `LLM_PROVIDER=claude`(유료, API 데이터는 학습에 안 씀) 또는 `none`(AI 없이 규칙만)으로 바꿔요. Claude는 기본이 `claude-opus-5-5`이고, 비용을 줄이려면 `CLAUDE_MODEL=claude-haiku-5-5`로 바꿔요. Claude를 고르면 안전 분류기가 거절할 때 서버가 다른 모델로 다시 돌리는 기능(server-side fallback)이 켜져 있어요.
-- 토큰과 키는 이 PC의 `bot\.env`에만 있고, 이 계정만 읽을 수 있게 해 둬요. 기록 파일(`bot\data\bot.log`)에는 토큰을 쓰지 않아요.
+- 토큰과 키는 이 PC의 `bot\.env`에만 있고 (기록 파일 `data\store.json`에는 토큰을 넣지 않아요), 이 계정만 읽을 수 있게 해 둬요. 기록 파일(`bot\data\bot.log`)에는 토큰을 쓰지 않아요.
 - 비서는 텔레그램, 기록 저장소, AI API 세 곳에만 연결돼요. PC의 다른 파일이나 명령은 건드리지 않아요.
 - 처음에 `/start` 코드를 보낸 대화 하나만 주인으로 기억하고, 다른 사람의 메시지와 버튼은 무시해요.
 

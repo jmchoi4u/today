@@ -357,7 +357,8 @@ test('비서: 모르는 말은 AI에게 묻고, AI 답은 검사한 행동만 �
   };
   const bot = createBot({ store: h.store, sync: { syncNow: async () => {} }, tg: { send: async (c, t) => h.sent.push({ text: t }), answer: async () => {}, clearButtons: async () => {} }, llm, state: h.state, now: h.now, opts: OPTS });
   await bot.handleUpdate({ message: { chat: { id: 7, type: 'private' }, from: { id: 7 }, text: '이력서 좀 고쳐야 하는데 열 시까지' } });
-  assert.ok(asked.ctx.items.some(i => i.id === 'med_am'));
+  assert.ok(asked.ctx.items.some(i => i.id === 'apply'));
+  assert.ok(!asked.ctx.items.some(i => i.id.startsWith('med_')), '약 항목은 AI에게 보내지 않는다');
   assert.ok(!JSON.stringify(asked.ctx).includes('long'), 'AI에게 약 정보(곡선·성분)는 보내지 않는다');
   const t = C.top3Of(h.store.day(KEY))[0];
   assert.deepEqual([t.text, C.fmtTime(t.due)], ['이력서 고치기', '22:00']);
@@ -367,7 +368,9 @@ test('비서: 모르는 말은 AI에게 묻고, AI 답은 검사한 행동만 �
 test('AI 답 검사: 모르는 행동·항목은 버리고, 칸은 잘라 낸다', () => {
   const ctx = { items: [{ id: 'water', name: '물' }], top3: [{ id: 't1', text: 'a' }] };
   const v = validate({ actions: [{ type: 'hack' }, { type: 'log', item: 'water', text: 'x' }, { type: 'log', item: 'nope' }, { type: 'top3_done', id: 't9', text: '결과' }, { type: 'top3_set', text: 'b', due: '25시' }], reply: 'ok' }, ctx);
-  assert.deepEqual(v.actions, [{ type: 'note', item: 'water', note: 'x' }, { type: 'top3_done', id: null, out: '결과' }, { type: 'top3_set', text: 'b', dueText: '' }]);
+  assert.deepEqual(v.actions, [{ type: 'note', item: 'water', note: 'x' }, { type: 'top3_done', id: 't1', out: '결과' }, { type: 'top3_set', text: 'b', dueText: '' }]);
+  const two = { items: [], top3: [{ id: 't1', text: 'a' }, { id: 't2', text: 'b' }] };
+  assert.deepEqual(validate({ actions: [{ type: 'top3_done', id: '', text: '' }], reply: '어느 거요?' }, two).actions, [], '어느 일인지 모르면 끝내지 않는다');
   assert.equal(validate(null, ctx), null);
   assert.equal(createLLM({ provider: 'gemini' }), null, '키가 없으면 AI 없음');
   assert.equal(createLLM({ provider: 'none', geminiKey: 'k' }), null);
@@ -431,5 +434,24 @@ test('설정 파일과 파일 저장소', () => {
   assert.equal(again.length, 1);
   fs.writeFileSync(file, '{깨짐');
   assert.equal(new FileStorage(file).length, 0, '깨진 파일이면 빈 저장소로 시작');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('안전: 같은 일을 다시 말해도 마감이 안 지워지고, AI가 약을 두 번 기록하지 못하고, 어제 버튼은 안 먹는다', async () => {
+  const h = harness(at(17, 0));
+  h.state.owner = 7;
+  await h.msg('코테 2문제 21시');
+  await h.bot.apply([{ type: 'top3_set', text: '코테 2문제', dueText: '' }]);
+  assert.equal(C.fmtTime(C.top3Of(h.store.day(KEY))[0].due), '21:00');
+  await h.bot.apply([{ type: 'note', item: 'med_am', note: '' }]);
+  await h.bot.apply([{ type: 'note', item: 'med_am', note: '' }]);
+  assert.equal(C.live(h.store.day(KEY)).filter(e => e.item === 'med_am').length, 1);
+  await h.bot.handleUpdate({ callback_query: { id: 'q', data: 't3d:t1', from: { id: 7 }, message: { message_id: 1, date: at(17, 0, 12) / 1000, chat: { id: 7 } } } });
+  assert.ok(!C.top3Of(h.store.day(KEY))[0].done, '어제 알림의 끝 버튼은 무시');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'today-bot-'));
+  const s = new FileStorage(path.join(dir, 's.json'), { scrub: (k, v) => (k === 'today.local' ? v.replace('SECRET', '') : v) });
+  s.setItem('today.local', '{"gh":"SECRET"}');
+  assert.ok(!fs.readFileSync(path.join(dir, 's.json'), 'utf8').includes('SECRET'), '비밀은 파일에 쓰지 않는다');
+  assert.ok(s.getItem('today.local').includes('SECRET'));
   fs.rmSync(dir, { recursive: true, force: true });
 });

@@ -91,7 +91,19 @@ try {
 const save = () => writeFileAtomic(stateFile, JSON.stringify(state, null, 1));
 
 // ----- 앱과 같은 저장소와 동기화 -----
-const storage = new FileStorage(path.join(dataDir, 'store.json'));
+// GitHub 토큰은 .env에만 둔다: 기록 파일(store.json)에 쓸 때는 뺀다
+const storage = new FileStorage(path.join(dataDir, 'store.json'), {
+  scrub: (k, v) => {
+    if (k !== 'today.local') return v;
+    try {
+      const j = JSON.parse(v);
+      if (j.gh) j.gh = { repo: j.gh.repo };
+      return JSON.stringify(j);
+    } catch {
+      return v;
+    }
+  },
+});
 // 60일 지난 날짜 기록은 기기에서 지운다 (원격 저장소에는 그대로 있다)
 const keepFrom = C.addDays(C.dayKey(Date.now()), -60);
 for (let i = storage.length - 1; i >= 0; i--) {
@@ -101,10 +113,9 @@ for (let i = storage.length - 1; i >= 0; i--) {
 const store = createStore({ storage });
 const repo = String(env.GITHUB_REPO).trim().replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/+$/, '');
 const gh = store.local().gh;
-if (!gh || gh.repo !== repo || gh.token !== env.GITHUB_TOKEN) {
-  // 처음이거나 바뀐 경우: 원격을 받기만 한다 (이 기기에서 만든 기본값으로 원격을 덮지 않게 markAllDirty는 하지 않는다)
-  store.setLocal({ gh: { repo, token: env.GITHUB_TOKEN }, shas: {}, etags: {} }, true);
-}
+// 처음이거나 저장소가 바뀐 경우: 원격을 받기만 한다 (이 기기에서 만든 기본값으로 원격을 덮지 않게 markAllDirty는 하지 않는다)
+if (!gh || gh.repo !== repo) store.setLocal({ gh: { repo, token: env.GITHUB_TOKEN }, shas: {}, etags: {} }, true);
+else store.setLocal({ gh: { repo, token: env.GITHUB_TOKEN } }, true); // 토큰은 실행할 때마다 .env에서
 const sync = createSync({
   store,
   // 브라우저 전용 옵션(cache, keepalive)은 빼고, 응답이 멈추면 30초 뒤 끊는다

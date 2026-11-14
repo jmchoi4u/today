@@ -34,7 +34,7 @@ export function systemPrompt() {
     '너는 사용자의 하루 기록 비서다. 사용자가 텔레그램으로 보낸 짧은 한국어 메시지를 아래 행동으로 바꾼다.',
     '행동 (type):',
     '- top3_set: 오늘 꼭 끝낼 일을 정한다. text=할 일(짧게), due=마감 "HH:MM"(24시간, 없으면 "")',
-    '- top3_done: 할 일을 끝냈다. id=끝낸 할 일의 id(모르면 ""), text=결과물 한 줄(없으면 "")',
+    '- top3_done: 할 일을 끝냈다. id=끝낸 할 일의 id (어느 일인지 모르면 이 행동을 넣지 말고 reply로 되묻는다), text=결과물 한 줄(없으면 "")',
     '- log: 항목 하나를 기록한다. item=항목 id (목록에 있는 것만), text=메모(없으면 "")',
     '- park: 걱정·비교·새 아이디어를 주차장에 적는다. text=그 내용',
     '- wake: 지금 일어났다. out: 지금 집 밖으로 나왔다. status: 오늘 상태를 묻는다.',
@@ -61,7 +61,12 @@ export function validate(out, ctx) {
   for (const a of out.actions.slice(0, 10)) {
     if (!a || !ACTION_TYPES.includes(a.type)) continue;
     if (a.type === 'top3_set' && s(a.text)) actions.push({ type: 'top3_set', text: s(a.text).slice(0, 40), dueText: /^\d{1,2}:\d{2}$/.test(s(a.due)) ? s(a.due) : '' });
-    else if (a.type === 'top3_done') actions.push({ type: 'top3_done', id: top3.has(s(a.id)) ? s(a.id) : null, out: s(a.text) });
+    else if (a.type === 'top3_done') {
+      // 어느 일인지 확실할 때만 끝낸다 (id가 맞거나, 안 끝난 일이 하나뿐일 때). 아니면 버리고 되묻게 둔다
+      const open = (ctx.top3 || []).filter(t => !t.done);
+      const id = top3.has(s(a.id)) ? s(a.id) : open.length === 1 ? open[0].id : null;
+      if (id) actions.push({ type: 'top3_done', id, out: s(a.text) });
+    }
     else if (a.type === 'log' && items.has(s(a.item))) actions.push({ type: 'note', item: s(a.item), note: s(a.text) });
     else if (a.type === 'park' && s(a.text)) actions.push({ type: 'park', note: s(a.text) });
     else if (['wake', 'out', 'status'].includes(a.type)) actions.push({ type: a.type });

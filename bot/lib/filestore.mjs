@@ -21,8 +21,10 @@ export function writeFileAtomic(file, text) {
 }
 
 export class FileStorage {
-  constructor(file) {
+  // scrub(key, value): 파일에 쓸 때만 값을 바꾼다 (토큰 같은 비밀을 파일에 남기지 않으려고)
+  constructor(file, { scrub = null } = {}) {
     this.file = file;
+    this.scrub = scrub;
     this.map = new Map();
     try {
       const j = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -48,6 +50,8 @@ export class FileStorage {
     if (this.map.delete(k)) this.save();
   }
   save() {
-    writeFileAtomic(this.file, JSON.stringify(Object.fromEntries(this.map)));
+    const out = {};
+    for (const [k, v] of this.map) out[k] = this.scrub ? this.scrub(k, v) : v;
+    writeFileAtomic(this.file, JSON.stringify(out));
   }
 }
