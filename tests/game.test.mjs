@@ -120,6 +120,26 @@ test('지표: withNote면 글이 있는 기록만 센다 (빈 줄은 30줄에 �
   assert.equal(GM.metricValue({ type: 'item_total', item: 'pain_note', withNote: true }, ctx), 1);
 });
 
+test('보고 설정: 기본은 금요일 17시 5줄, 설정으로 요일·시각·칸을 바꾼다', () => {
+  const d = GM.reportCfg(null);
+  assert.deepEqual([d.day, d.after, d.title, d.custom, d.numsOnly, d.fields.map(f => f.id).join()], [5, '17:00', '금요일 5줄', false, false, 'did,stuck,next,ask']);
+  const rc = GM.reportCfg({ report: { day: 0, after: '20:00', title: '일요일 리뷰', numsOnly: true, fields: [{ id: 'kept', label: '지킨 규칙' }, { bad: 1 }], nums: [{ id: 'a', label: 'A' }] } });
+  assert.deepEqual([rc.day, rc.after, rc.title, rc.custom, rc.numsOnly, rc.fields.length, rc.nums.length], [0, '20:00', '일요일 리뷰', true, true, 1, 1]);
+  assert.equal(GM.reportCfg({ report: { day: 9, after: '25시' } }).day, 5, '이상한 값은 기본으로');
+  assert.equal(GM.reportCfg({ report: { day: 9, after: '25시' } }).after, '17:00');
+  // 2026-11-22는 일요일, 11-20은 금요일. 새벽 4시 전은 전날로 친다
+  const sun = new Date(2026, 10, 22, 20, 0).getTime();
+  assert.equal(GM.reportDue(rc, { key: '2026-11-22', now: sun - 1, days: [] }), false);
+  assert.equal(GM.reportDue(rc, { key: '2026-11-22', now: sun, days: [] }), true);
+  assert.equal(GM.reportDue(rc, { key: '2026-11-22', now: new Date(2026, 10, 23, 1, 0).getTime(), days: [] }), true, '자정을 넘겨도 같은 날');
+  assert.equal(GM.reportDue(rc, { key: '2026-11-20', now: sun, days: [] }), false);
+  assert.equal(GM.reportDue(GM.reportCfg({ report: { day: 0, after: '20:00', from: '2026-11-29' } }), { key: '2026-11-22', now: sun, days: [] }), false, '시작일 전에는 안 묻는다');
+  assert.equal(GM.reportDue(d, { key: '2026-11-20', now: new Date(2026, 10, 20, 17, 0).getTime(), days: [] }), true);
+  const day = { date: '2026-11-22', events: [{ id: 'e', item: 'report5', t: 1 }, { id: 'f', item: 'offer', t: 2 }, { id: 'g', item: 'offer', t: 3, del: true }] };
+  assert.equal(GM.reportDue(rc, { key: '2026-11-22', now: sun, days: [null, day] }), false, '이미 쓴 주는 다시 묻지 않는다');
+  assert.equal(GM.countIn([null, day], 'offer'), 1);
+});
+
 test('아침 루틴: 기록에서 단계를 확인한다', () => {
   const now = clock(at(9, 0));
   const store = createStore({ storage: new MemoryStorage(), now });

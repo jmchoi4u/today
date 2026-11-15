@@ -54,14 +54,20 @@ export function planPings({ now, cfg, day, prevDay = null, recentDays = [], game
   // 2) 아침 루틴 (일어나고 4시간 안): 지금 할 단계의 목표 시각이 되면 한 번
   const steps = GM.routineState(GM.routineFor(game?.routine, key), day, { focusOn: !!fx });
   if (w && now - w <= 4 * HOUR && !state.routineOff) {
+    const go = game?.routineGo;
+    const goId = go ? go.step || 'out' : null;
+    // 단계마다 목표 시각에 한 번 묻는다. 앞 단계를 안 눌러도 뒤 단계는 제시간에 묻는다.
+    // 가장 앞의 안 한 단계는 늦어도 묻고, 그 뒤 단계는 목표 시각에서 10분이 지났으면 건너뛴다 (늦게 켜졌을 때 몰아서 보내지 않게)
     const next = steps.find(s => !s.done);
-    if (next && next.min != null && now >= w + next.min * MIN) {
-      const p = stepPing(next, w + next.min * MIN, { byId, day });
-      if (p) push('routine', `rt:${next.id}`, p);
+    for (const s of steps) {
+      if (s.done || s.min == null || s.id === goId) continue; // 출발 단계는 아래 출발 마감이 맡는다
+      const due = w + s.min * MIN;
+      if (now < due || (s !== next && now - due > 10 * MIN)) continue;
+      const p = stepPing(s, due, { byId, day });
+      if (p) push('routine', `rt:${s.id}`, p);
     }
     // 집 밖으로 나가는 마감
-    const go = game?.routineGo;
-    const outStep = go && steps.find(s => s.id === (go.step || 'out'));
+    const outStep = go && steps.find(s => s.id === goId);
     if (outStep && !outStep.done) {
       const goal = w + (go.min || 60) * MIN;
       const cap = go.weekday && !weekend ? at(go.weekday) : null;
@@ -159,7 +165,8 @@ export function planPings({ now, cfg, day, prevDay = null, recentDays = [], game
   }
 
   // 9) 금요일 5줄: 금요일 17시 뒤, 최근 사흘 안에 보낸 보고가 없으면 (recentDays는 최근 7일, 오래된 것부터)
-  if (game?.report && C.keyToDate(key).getDay() === 5 && now >= at('17:00') && now < at('23:00') && !GM.reportsOf(recentDays.slice(-3)).length) {
+  const rc = GM.reportCfg(game);
+  if (game?.report && GM.reportDue(rc, { key, now, rollover: R, days: recentDays.slice(-3) }) && now < at(rc.after) + 4 * HOUR) {
     push('report', 'report5', { text: reportDraft(game.report, recentDays, opts.appUrl), buttons: [] });
   }
 
@@ -197,12 +204,20 @@ function stepPing(s, due, { byId, day }) {
   return null;
 }
 
-// 금요일 5줄 초안: 이번 주 끝낸 일과 결과물, 횟수
-export function reportDraft(rc, days, appUrl) {
+// 주간 보고·리뷰 초안: 이번 주 끝낸 일과 결과물, 횟수 (기본은 금요일 5줄. report 설정으로 바뀐다)
+export function reportDraft(report, days, appUrl) {
+  const rc = GM.reportCfg({ report });
+  const link = appUrl ? `\n\n앱에서 마저 쓰고 보내기: ${appUrl}?go=report` : '';
+  const head = `📮 ${rc.title}${rc.to ? ` → ${rc.to}` : ''}`;
+  const numOf = x => (x.item ? `${x.label} ${GM.countIn(days, x.item)}` : `${x.label} __`);
+  if (rc.custom) {
+    const nums = rc.nums.map(numOf).join(' · ') || '(채우기)';
+    return `${head}\n숫자: ${nums}\n${rc.fields.map(f => `${f.label}:`).join('\n')}${rc.numsOnly ? '\n보낼 때는 숫자만 보내요.' : ''}${link}`;
+  }
   const done = days.flatMap(d => C.top3Of(d).filter(t => t.done).map(t => (t.out ? `${t.text} (${t.out})` : t.text)));
   const n = new Map();
   for (const x of done) n.set(x, (n.get(x) || 0) + 1);
   const did = [...n].slice(0, 5).map(([x, k]) => (k > 1 ? `${x} ×${k}` : x)).join(', ') || '(채우기)';
-  const nums = (rc.nums || []).map(x => `${x.label} __`).join(' · ') || '(채우기)';
-  return `📮 금요일 5줄${rc.to ? ` → ${rc.to}` : ''}\n1. 한 것: ${did}\n2. 숫자: ${nums}\n3. 막힌 것:\n4. 다음 주:\n5. 부탁:${appUrl ? `\n\n앱에서 마저 쓰고 보내기: ${appUrl}?go=report` : ''}`;
+  const nums = rc.nums.map(numOf).join(' · ') || '(채우기)';
+  return `${head}\n1. 한 것: ${did}\n2. 숫자: ${nums}\n3. 막힌 것:\n4. 다음 주:\n5. 부탁:${link}`;
 }

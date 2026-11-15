@@ -187,6 +187,40 @@ export function questState(quest, ctx) {
   return { ...quest, stages, current, bonus, doneStages: stages.filter(s => s.status === 'done').length };
 }
 
+// ---------- 주간 보고·리뷰 (game.json의 report) ----------
+// 기본은 금요일 17시 5줄 보고. day(0=일 ~ 6=토), after('HH:MM'), title, fields, numsOnly로 바꿀 수 있다.
+// 숫자(nums) 한 칸: { id, label, item?(그 항목의 이번 주 횟수로 채움), carry?(지난번 값으로 채움) }
+export const REPORT_FIELDS = [
+  { id: 'did', label: '1. 이번 주 한 것', fill: 'done' },
+  { id: 'stuck', label: '3. 막힌 것' },
+  { id: 'next', label: '4. 다음 주' },
+  { id: 'ask', label: '5. 부탁' },
+];
+export const DOW = '일월화수목금토';
+export function reportCfg(game) {
+  const r = game?.report || {};
+  const custom = Array.isArray(r.fields) && r.fields.length > 0;
+  return {
+    to: r.to || '',
+    nums: Array.isArray(r.nums) ? r.nums : [],
+    day: Number.isInteger(r.day) && r.day >= 0 && r.day <= 6 ? r.day : 5,
+    after: /^\d{1,2}:\d{2}$/.test(r.after || '') ? r.after : '17:00',
+    title: r.title || '금요일 5줄',
+    lead: r.lead || '',
+    fields: custom ? r.fields.filter(f => f?.id && f.label) : REPORT_FIELDS,
+    custom,
+    numsOnly: !!r.numsOnly, // 보낼 때 숫자만 (꿈이나 계획은 보내지 않는다)
+    from: isDateKey(r.from) ? r.from : '', // 이 날짜부터 묻는다
+  };
+}
+// 지금이 보고할 때인가: 그 요일(새벽 기준 하루)의 정한 시각 뒤이고, 최근 며칠(days) 안에 보낸 게 없을 때
+export function reportDue(rc, { key, now, rollover = 4, days = [] }) {
+  if (rc.from && key < rc.from) return false;
+  return C.keyToDate(key).getDay() === rc.day && now >= C.tsFor(key, rc.after, rollover) && !reportsOf(days).length;
+}
+// 그 항목을 최근 며칠(days) 동안 몇 번 했나
+export const countIn = (days, item) => days.reduce((a, d) => a + (d ? C.live(d).filter(e => e.item === item).length : 0), 0);
+
 // ---------- 아침 루틴 ----------
 export const DEFAULT_ROUTINE = [
   { id: 'wake', text: '일어난 시각 남기기', check: 'wake' },

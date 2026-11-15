@@ -133,6 +133,48 @@ test('알림: 기상 → 루틴 다음 단계 → 출발 마감', () => {
   assert.ok(!keys(plan(store, now, { routineOff: true })).some(k => k.startsWith('rt:')), '루틴 그만이면 단계 알림 없음');
 });
 
+test('알림: 앞 단계를 안 눌러도 뒤 단계는 제시간에 묻는다. 한참 지난 단계는 몰아서 보내지 않는다', () => {
+  const now = clock(at(7, 21));
+  const store = makeStore(now);
+  store.setWake(KEY, at(7, 0));
+  // 약도 샤워도 안 누른 채 07:21
+  assert.deepEqual(keys(plan(store, now)).filter(k => k.startsWith('rt:')), ['rt:med', 'rt:shower'], '가장 앞 단계와 방금 시각이 된 단계');
+  now.set(at(7, 41));
+  const ks = keys(plan(store, now)).filter(k => k.startsWith('rt:'));
+  assert.deepEqual(ks, ['rt:med', 'rt:top3'], '샤워(07:20)는 10분이 지나 건너뛰고, 07:40 단계는 묻는다');
+  now.set(at(8, 1));
+  assert.ok(!keys(plan(store, now)).includes('rt:out'), '출발 단계는 출발 마감 알림이 맡는다');
+  assert.ok(keys(plan(store, now)).includes('go0:' + at(8, 0)));
+  // 2시간 늦게 켜진 경우: 가장 앞 단계 하나만
+  now.set(at(9, 0));
+  assert.deepEqual(keys(plan(store, now)).filter(k => k.startsWith('rt:')), ['rt:med']);
+});
+
+test('리뷰: 요일·시각·칸을 설정으로 바꾼다 (일요일 20시, 숫자 세 개, 보낼 땐 숫자만)', () => {
+  const SUN = '2026-11-22';
+  const now = clock(at(19, 59, 22));
+  const store = makeStore(now);
+  store.saveItem({ id: 'offer', name: '제안', icon: '📣', cat: 'habit', type: 'count', block: 'any' });
+  store.setGame({ ...GAME, report: { to: '숫자 받는 사람', title: '일요일 리뷰', day: 0, after: '20:00', numsOnly: true,
+    nums: [{ id: 'paid', label: '유료 고객', carry: true }, { id: 'offer', label: '이번 주 제안', item: 'offer' }, { id: 'debt', label: '빚 잔액', carry: true }],
+    fields: [{ id: 'kept', label: '지킨 규칙 하나' }, { id: 'broke', label: '무너진 규칙 하나' }] } });
+  store.setWake(SUN, at(9, 0, 22));
+  for (let i = 0; i < 3; i++) store.logEvent('2026-11-20', 'offer', { t: at(15, i, 20) });
+  const run = () => planPings({ now: now(), cfg: store.config(), day: store.day(C.dayKey(now(), 4)), recentDays: C.lastDays(C.dayKey(now(), 4), 7).filter(k => store.hasDay(k)).map(k => store.day(k)), game: store.game(), profiles: [], opts: OPTS });
+  assert.ok(!run().some(p => p.key === 'report5'), '20시 전엔 안 묻는다');
+  now.set(at(20, 1, 22));
+  const r = run().find(p => p.key === 'report5');
+  assert.match(r.text, /일요일 리뷰 → 숫자 받는 사람/);
+  assert.match(r.text, /숫자: 유료 고객 __ · 이번 주 제안 3 · 빚 잔액 __/, '항목 횟수는 기록에서 채운다');
+  assert.match(r.text, /지킨 규칙 하나:\n무너진 규칙 하나:/);
+  assert.match(r.text, /숫자만 보내요/);
+  now.set(at(17, 30, 20));
+  assert.ok(!run().some(p => p.key === 'report5'), '금요일엔 안 묻는다');
+  now.set(at(20, 1, 22));
+  store.logEvent(SUN, 'report5', { nums: { paid: '0' } });
+  assert.ok(!run().some(p => p.key === 'report5'), '이미 썼으면 안 묻는다');
+});
+
 test('알림: 핵심 3가지 마감 30분 전, 마감, 1시간 지남. 미루면 새로 센다', () => {
   const now = clock(at(20, 31));
   const store = makeStore(now);

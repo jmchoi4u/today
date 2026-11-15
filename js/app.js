@@ -7,7 +7,7 @@ import * as PK from './pk.js';
 import * as GM from './game.js';
 import * as WX from './weather.js';
 
-const VERSION = '1.7.1';
+const VERSION = '1.7.2';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -44,7 +44,7 @@ const itemById = id => cfg().items.find(i => i.id === id);
 const nameOf = id => {
   const it = itemById(id) || C.SPECIAL[id];
   if (it) return it;
-  if (id === 'report5') return { name: '금요일 5줄 보고', icon: '📮' };
+  if (id === 'report5') return { name: GM.reportCfg(store.game()).title, icon: '📮' };
   if (id?.startsWith('q:')) {
     const t = store.game()?.quest?.stages?.flatMap(s => s.tasks || []).find(x => x.id === id.slice(2));
     return { name: t ? `퀘스트 · ${t.text}` : '퀘스트', icon: '🗺️' };
@@ -426,11 +426,11 @@ function coachList(day) {
   const se = season();
   if (se.left === 0 && !sn('season')) extra.push({ pri: 38, key: 'season', icon: '🏁', tone: 'now', title: `시즌 ${se.n} 마지막 날이에요`, sub: '2주 결과를 확인하고 보고해요', action: { label: '결과 보기', act: 'tab', arg: 'week' } });
   if (!l.seen.setup && !sn('setup')) extra.push({ pri: 50, key: 'setup', icon: '🛠️', tone: 'calm', title: '기본 항목을 내 루틴으로 바꿔요', sub: '약 이름, 시간대, 필수 여부를 설정에서 고칠 수 있어요', action: { label: '설정 열기', act: 'tab', arg: 'set' }, alt: { label: '괜찮아요', act: 'seen', arg: 'setup' } });
-  // 금요일 5줄: 금요일 저녁(17시 이후)에 이번 주 보고가 없으면
-  const nowD = new Date(now());
-  if (nowD.getDay() === 5 && nowD.getHours() >= 17 && !GM.reportsOf(C.lastDays(tk, 3).map(getDay)).length && !sn('report5')) {
-    const to = reportCfg().to;
-    extra.push({ pri: 20, key: 'report5', icon: '📮', title: '금요일 5줄 보내는 날', sub: `${to ? `${to}에게 ` : ''}이번 주 한 것·숫자·막힌 것·다음 주·부탁. 기록은 미리 채워 둘게요`, action: { label: '쓰기', act: 'report5' } });
+  // 주간 보고·리뷰: 정한 요일·시각 뒤에 이번 주 것이 없으면 (기본 금요일 17시, game.json의 report로 바꾼다)
+  const rc = reportCfg();
+  if (GM.reportDue(rc, { key: tk, now: now(), rollover: rollover(), days: C.lastDays(tk, 3).map(getDay) }) && !sn('report5')) {
+    const sub = rc.lead || `${rc.to ? `${rc.to}에게 ` : ''}${rc.custom ? '숫자를 적고 보내요' : '이번 주 한 것·숫자·막힌 것·다음 주·부탁'}. 기록은 미리 채워 둘게요`;
+    extra.push({ pri: 20, key: 'report5', icon: '📮', title: `${rc.title} 시간이에요`, sub, action: { label: '쓰기', act: 'report5' } });
   }
   // 매일 모으는 한 줄 (예: 사장님 불편): 정한 시각이 지났는데 오늘 아직 없으면
   const nowR = Math.round((now() - C.dayStartTs(day.date, rollover())) / MIN); // 하루 시작(새벽)부터 지난 분: 자정을 넘겨도 같은 날
@@ -727,31 +727,36 @@ function routineHtml(day) {
   return win(`아침 루틴 ${n}/${steps.length}`, 'MORNING', `${goBar}${rows}${plan ? `<p class="rt-plan">${plan}</p>` : ''}`, 'routine', `<button class="icon-btn" data-act="rt-close" aria-label="아침 루틴 닫기">${IC.x}</button>`);
 }
 
-// ---------- 금요일 5줄 보고 ----------
-const reportCfg = () => store.game()?.report || { to: '', nums: [] };
+// ---------- 주간 보고·리뷰 (기본: 금요일 5줄. game.json의 report로 요일·시각·칸을 바꾼다) ----------
+const reportCfg = () => GM.reportCfg(store.game());
 function weekFacts(endKey) {
   const days = C.lastDays(endKey, 7).map(getDay).filter(Boolean);
   const done = days.flatMap(d => C.top3Of(d).filter(t => t.done).map(t => (t.out ? `${t.text} (${t.out})` : t.text)));
-  const count = id => days.reduce((a, d) => a + C.live(d).filter(e => e.item === id).length, 0);
+  const count = id => GM.countIn(days, id);
   const focus = days.reduce((a, d) => a + C.live(d).filter(e => e.item === 'focus').reduce((x, e) => x + (e.min || 0), 0), 0);
   const counts = C.activeItems(cfg()).filter(i => i.type === 'count' && !['water', 'coffee'].includes(i.id) || i.goal?.total).map(i => [i, count(i.id)]).filter(([, n]) => n);
-  return { done, counts, focus };
+  return { done, counts, focus, count };
 }
 function openReportSheet(key = todayKey()) {
   const rc = reportCfg(), f = weekFacts(key);
-  const prev = GM.reportsOf([getDay(key)]).pop();
+  const prev = GM.reportsOf([getDay(key)]).pop(); // 오늘 이미 쓴 것 (고치기)
+  const last = GM.reportsOf(allDays()).filter(r => r.key < key).pop(); // 지난번
   // 같은 일은 한 번만, 여러 날 했으면 ×횟수
   const doneN = new Map();
   for (const x of f.done) doneN.set(x.trim(), (doneN.get(x.trim()) || 0) + 1);
-  const did = prev?.did ?? [...doneN].slice(0, 5).map(([x, n]) => (n > 1 ? `${x} ×${n}` : x)).join(', ');
+  const did = [...doneN].slice(0, 5).map(([x, n]) => (n > 1 ? `${x} ×${n}` : x)).join(', ');
   const auto = [...f.counts.map(([i, n]) => `${i.name} ${n}${i.unit || '번'}`), f.focus ? `집중 ${C.fmtDur(f.focus)}` : ''].filter(Boolean).join(' · ');
-  const nums = (rc.nums || []).map(n => `<label class="fld"><span>${esc(n.label)}</span><input name="num-${esc(n.id)}" inputmode="decimal" value="${esc(prev?.nums?.[n.id] ?? '')}" autocomplete="off"></label>`).join('');
-  openSheet('금요일 5줄', 'REPORT', `<p class="lead">${rc.to ? `${esc(rc.to)}에게 ` : ''}매주 금요일에 보내요. 매일 보고는 안 해요. 이번 주 기록은 미리 채워 뒀어요.</p>
-    <label class="fld"><span>1. 이번 주 한 것</span><textarea name="did" rows="2" maxlength="200">${esc(did)}</textarea></label>
-    <div class="fld"><span>2. 숫자${auto ? ` <small>· ${esc(auto)}</small>` : ''}</span></div>${nums ? `<div class="fld2">${nums}</div>` : ''}
-    <label class="fld"><span>3. 막힌 것</span><textarea name="stuck" rows="2" maxlength="200">${esc(prev?.stuck || '')}</textarea></label>
-    <label class="fld"><span>4. 다음 주</span><textarea name="next" rows="2" maxlength="200">${esc(prev?.next || '')}</textarea></label>
-    <label class="fld"><span>5. 부탁</span><textarea name="ask" rows="2" maxlength="200">${esc(prev?.ask || '')}</textarea></label>
+  // 숫자 칸: 오늘 쓴 값 → 항목의 이번 주 횟수 → 지난번 값 순으로 미리 채운다
+  const numVal = n => prev?.nums?.[n.id] ?? (n.item ? String(f.count(n.item)) : n.carry ? last?.nums?.[n.id] ?? '' : '');
+  const numHint = n => (n.carry && last?.nums?.[n.id] != null && prev?.nums?.[n.id] == null ? ` <small>지난번 ${esc(last.nums[n.id])}</small>` : '');
+  const nums = rc.nums.map(n => `<label class="fld"><span>${esc(n.label)}${numHint(n)}</span><input name="num-${esc(n.id)}" inputmode="decimal" value="${esc(numVal(n))}" autocomplete="off"></label>`).join('');
+  const numsHtml = `<div class="fld"><span>${rc.custom ? '숫자' : '2. 숫자'}${auto ? ` <small>· ${esc(auto)}</small>` : ''}</span></div>${nums ? `<div class="fld2">${nums}</div>` : ''}`;
+  const fieldHtml = x => `<label class="fld"><span>${esc(x.label)}</span><textarea name="rf-${esc(x.id)}" rows="2" maxlength="200" placeholder="${esc(x.hint || '')}">${esc(prev?.[x.id] ?? (x.fill === 'done' ? did : ''))}</textarea></label>`;
+  // 기본(5줄)은 "한 것 → 숫자 → 나머지", 직접 정한 칸이면 숫자가 먼저
+  const fields = rc.fields.map(fieldHtml);
+  const body = rc.custom ? numsHtml + fields.join('') : fields[0] + numsHtml + fields.slice(1).join('');
+  const lead = rc.lead || `${rc.to ? `${rc.to}에게 ` : ''}매주 ${GM.DOW[rc.day]}요일에 보내요. 이번 주 기록은 미리 채워 뒀어요.`;
+  openSheet(rc.title, 'REPORT', `<p class="lead">${esc(lead)}</p>${body}
     <div class="row-btns"><button class="btn pri" data-act="save">저장하고 보내기</button><button class="btn" data-act="keep">저장만</button></div>`, {
     save() {
       const r = collect();
@@ -765,8 +770,9 @@ function openReportSheet(key = todayKey()) {
     },
   });
   function collect() {
-    const r = { did: v('did').trim(), stuck: v('stuck').trim(), next: v('next').trim(), ask: v('ask').trim(), nums: {} };
-    for (const n of rc.nums || []) if (v('num-' + n.id).trim()) r.nums[n.id] = v('num-' + n.id).trim();
+    const r = { nums: {} };
+    for (const x of rc.fields) r[x.id] = v('rf-' + x.id).trim();
+    for (const n of rc.nums) if (v('num-' + n.id).trim()) r.nums[n.id] = v('num-' + n.id).trim();
     if (prev) store.updateEvent(key, prev.id, r);
     else store.logEvent(key, 'report5', r);
     return r;
@@ -774,8 +780,13 @@ function openReportSheet(key = todayKey()) {
 }
 function reportText(key, r, auto) {
   const rc = reportCfg();
-  const nums = [...(rc.nums || []).filter(n => r.nums?.[n.id]).map(n => `${n.label} ${r.nums[n.id]}`), auto].filter(Boolean).join(' · ');
-  return [`[금요일 5줄 · ${C.fmtDate(key)}]`, `1. 이번 주 한 것: ${r.did || '-'}`, `2. 숫자: ${nums || '-'}`, `3. 막힌 것: ${r.stuck || '없음'}`, `4. 다음 주: ${r.next || '-'}`, `5. 부탁: ${r.ask || '없음'}`].join('\n');
+  const numList = rc.nums.filter(n => r.nums?.[n.id]).map(n => `${n.label} ${r.nums[n.id]}`);
+  const head = `[${rc.title} · ${C.fmtDate(key)}]`;
+  // 숫자만 보내기로 했으면 숫자만 (계획이나 다짐은 보내지 않는다)
+  if (rc.numsOnly) return [head, numList.join(' · ') || '-'].join('\n');
+  const numLine = `${rc.custom ? '숫자' : '2. 숫자'}: ${[...numList, auto].filter(Boolean).join(' · ') || '-'}`;
+  const lines = rc.fields.map(x => `${x.label}: ${r[x.id] || '-'}`);
+  return [head, ...(rc.custom ? [numLine, ...lines] : [lines[0], numLine, ...lines.slice(1)])].join('\n');
 }
 
 // ---------- 메인 퀘스트 ----------
@@ -796,12 +807,12 @@ function questHtml(g) {
   const stages = Q.stages.map(s => `<li class="qs ${s.status} ${s === cur ? 'cur' : ''}"><span class="qs-n">${s.status === 'done' ? '✓' : ''}</span><b>${esc(s.name)}</b><span class="qs-w">${esc(stageWhen(s))}</span><i>${s.ok}/${s.tasks.length}</i></li>`).join('');
   const pains = allDays().flatMap(d => C.live(d).filter(e => e.item === 'pain_note' && e.note).map(e => ({ ...e, key: d.date })));
   const painHtml = itemById('pain_note') ? `<details><summary>틈 노트 · 사장님 불편 ${pains.length}줄</summary>${pains.length ? `<ul class="med-ul">${pains.slice(-8).reverse().map(p => `<li>${esc(p.note)} <small class="muted">${md(p.key)}</small></li>`).join('')}</ul>` : '<p class="muted">아직 없어요. 가게를 나오면서 한 줄씩.</p>'}</details>` : '';
-  const reports = GM.reportsOf(allDays());
+  const reports = GM.reportsOf(allDays()), rcq = reportCfg();
   return win(`메인 퀘스트 · ${esc(Q.title)}`, 'QUEST', `${Q.goal ? `<p class="lead">${esc(Q.goal)}</p>` : ''}${Q.rule ? `<p class="st-key">${esc(Q.rule)}</p>` : ''}
     ${cur ? `<h3 class="sub-h">지금 단계 · ${esc(cur.name)} <small>${esc(stageWhen(cur))}${dd ? ` · ${esc(dd)}` : ''}</small></h3>${cur.goal ? `<p class="muted">${esc(cur.goal)}</p>` : ''}<div class="q-tasks">${tasks}</div>` : ''}
     <h3 class="sub-h">전체 길 <small>${Q.doneStages}/${Q.stages.length} 단계</small></h3><ol class="q-stages">${stages}</ol>
     ${painHtml}
-    <details><summary>금요일 5줄 · ${reports.length}번 보냄</summary>${reports.length ? `<ul class="med-ul">${reports.slice(-4).reverse().map(r => `<li>${md(r.key)} · ${esc(r.did || '')}</li>`).join('')}</ul>` : ''}<div class="row-btns"><button class="btn sm pri" data-act="report5">이번 주 보고 쓰기</button></div></details>
+    <details><summary>${esc(rcq.title)} · ${reports.length}번</summary>${reports.length ? `<ul class="med-ul">${reports.slice(-4).reverse().map(r => `<li>${md(r.key)} · ${esc(rcq.nums.filter(n => r.nums?.[n.id]).map(n => `${n.label} ${r.nums[n.id]}`).join(' · ') || r.did || '')}</li>`).join('')}</ul>` : ''}<div class="row-btns"><button class="btn sm pri" data-act="report5">이번 주 것 쓰기</button></div></details>
     ${Q.rules?.length ? `<details><summary>판을 굴리는 장치</summary><ol class="med-ul">${Q.rules.map(x => `<li>${esc(x)}</li>`).join('')}</ol></details>` : ''}
     ${Q.traps?.length ? `<details><summary>미끄러지는 곳</summary><ul class="med-ul">${Q.traps.map(x => `<li>${esc(x)}</li>`).join('')}</ul></details>` : ''}
     ${Q.signals?.length ? `<details><summary>분기마다 볼 신호</summary><ul class="med-ul">${Q.signals.map(x => `<li>${esc(x)}</li>`).join('')}</ul></details>` : ''}
@@ -1136,7 +1147,7 @@ function guideHtml() {
   return win('사용설명서', 'GUIDE', `<p class="lead">앱과 텔레그램 비서는 같은 기록을 써요. 어느 쪽에서 눌러도 돼요.</p>
     ${sec('오늘 탭', ['타일을 한 번 누르면 기록, 체크한 타일을 누르면 시각 고치기, 타일의 ⋯은 건너뛰기와 지난 시각 기록', '아침 루틴: 일어나고 4시간 동안 보여요. 맨 위 줄이 집 밖으로 나가는 마감이에요', '핵심 3가지: 끝이 보이는 일 하나와 마감 시각. 끝내면 결과물 한 줄', '코치 카드: 지금 할 한 가지. "나중에"를 누르면 잠시 뒤 다시 물어요', '집중 타이머: 25분·50분. 약 효과가 가장 높은 구간엔 코치가 50분을 권해요'])}
     ${sec('흐름·약 탭', ['맨 위 "＋ 기록 추가": 기상·취침·집중과 모든 항목을 원하는 시각에 넣어요. 지난 날짜도 돼요', '기록 줄을 누르면 시각·내용을 고치거나 지워요', '약 창에 맞춘 하루: 지금 칸이 밝게 보여요', '약: 효과 곡선, 복용 기록, 언제 먹으면 언제까지, 내 데이터로 본 피크'])}
-    ${sec('성장 탭', ['메인 퀘스트: 지금 단계의 과제를 누르면 +50 EXP. 숫자가 붙은 과제는 기록에서 자동으로 세요', '레벨과 스탯: 목표를 채우면 등급이 올라요', '금요일 5줄: 한 주 기록이 미리 채워져 있어요'])}
+    ${sec('성장 탭', ['메인 퀘스트: 지금 단계의 과제를 누르면 +50 EXP. 숫자가 붙은 과제는 기록에서 자동으로 세요', '레벨과 스탯: 목표를 채우면 등급이 올라요', '주간 리뷰: 정한 요일·시각에 코치가 물어요. 한 주 기록과 지난번 숫자가 미리 채워져 있어요'])}
     ${sec('텔레그램 비서: 보내는 말', ['<b>코테 2문제 21시</b> / 21시까지 이력서 / 1시간 뒤 메일 답장 → 오늘 핵심 + 마감', '<b>내일 10시 코테</b> → 내일 핵심', '<b>끝</b> / 끝 풀이 올림 → 가장 급한 일을 끝낸 걸로 + 결과물 한 줄', '<b>걱정: …</b> → 주차장에 넣고 걱정 시간에 같이 봐요', '<b>불편: …</b> → 불편 한 줄', '<b>약 먹었어 / 일어났어 / 나왔어</b>', '<b>오늘</b> → 지금 상태'])}
     ${sec('텔레그램 비서: 명령', ['/focus 50 → 집중 타이머 (끝나면 기록하고 뭐 했는지 물어요)', '/stop → 타이머를 멈추고 한 만큼 기록', '/pause → 오늘은 먼저 말 걸지 않기, /resume → 다시', '/update → 새 버전이 있으면 바로 받기 (평소엔 10분마다 알아서 받아요)', '/help → 짧은 도움말'])}
     ${sec('텔레그램 비서: 먼저 말 거는 때', ['기상 확인 → 아침 루틴 단계마다 목표 시각 → 출발 10분 전과 출발 시각', '예정 약: 예정 시각, 1시간 지나면 한 번 더', '핵심 마감: 30분 전, 마감, 1시간 지남', '약 효과가 가장 높은 구간이 시작될 때', '저녁: 매일 한 줄, 걱정 시간(주차장에 적은 날만), 밤 규칙과 내일 첫 결과물, 소등 30분 전', '같은 알림은 하루 한 번. 조용한 시간(기본 01:00~06:30)엔 말 걸지 않아요'])}
