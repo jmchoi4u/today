@@ -34,7 +34,8 @@ export function createTelegram({ token, fetchFn = globalThis.fetch }) {
   return {
     getMe: () => call('getMe'),
     getUpdates: (offset, timeout = 50) => call('getUpdates', { offset, timeout, allowed_updates: ['message', 'callback_query'] }, (timeout + 15) * 1000),
-    send: (chatId, text, buttons) => call('sendMessage', { chat_id: chatId, text: String(text).slice(0, 4000), link_preview_options: { is_disabled: true }, reply_markup: keyboard(buttons) }),
+    // html: true면 <b>, <i>, <a href>를 쓴 글 (글쓴 쪽에서 &, <, >를 미리 바꿔 둔다)
+    send: (chatId, text, buttons, { html = false } = {}) => call('sendMessage', { chat_id: chatId, text: String(text).slice(0, 4000), parse_mode: html ? 'HTML' : undefined, link_preview_options: { is_disabled: true }, reply_markup: keyboard(buttons) }),
     answer: (id, text) => call('answerCallbackQuery', { callback_query_id: id, text: text ? String(text).slice(0, 190) : undefined }),
     clearButtons: (chatId, messageId) => call('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }),
   };

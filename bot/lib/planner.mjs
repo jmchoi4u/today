@@ -8,11 +8,12 @@ const { MIN, HOUR } = C;
 const fmt = C.fmtTime;
 export const btn = (text, data) => ({ text, callback_data: String(data).slice(0, 64) });
 
-const PRI = { focus: 0, due: 1, dose: 2, go: 3, routine: 4, wake: 5, plan: 6, peak: 7, daily: 8, hint: 9, report: 10 };
+const PRI = { focus: 0, due: 1, cal: 1.5, dose: 2, go: 3, routine: 4, wake: 5, plan: 6, peak: 7, daily: 8, hint: 9, report: 10 };
 
 // opts: { wakeWeekday, wakeWeekend, quietFrom, quietTo, appUrl }
 // state: { focus, routineOff }
-export function planPings({ now, cfg, day, prevDay = null, recentDays = [], game = null, profiles = [], state = {}, opts = {} }) {
+// calendar: { upcoming: 오늘(새벽 기준) 시간이 있는 일정, tomorrow: 내일 일정 } 또는 null
+export function planPings({ now, cfg, day, prevDay = null, recentDays = [], game = null, profiles = [], state = {}, opts = {}, calendar = null }) {
   const R = cfg?.prefs?.rollover ?? 4;
   const key = day.date;
   const at = hhmm => C.tsFor(key, hhmm, R);
@@ -87,6 +88,14 @@ export function planPings({ now, cfg, day, prevDay = null, recentDays = [], game
     if (now >= d - 30 * MIN && now < d) push('due', `due30:${t.id}:${d}`, { text: `⏰ ${Math.ceil((d - now) / MIN)}분 남았어요: ${t.text} (${fmt(d)} 마감${to})`, buttons: [[btn('✅ 끝냈어요', `t3d:${t.id}`), btn('+15분', `t3s:${t.id}:15`)]] });
     if (now >= d && now < d + HOUR) push('due', `due0:${t.id}:${d}`, { text: `⏰ 마감 시간이에요: ${t.text}\n끝났으면 결과물 한 줄을 답장으로 보내 주세요.`, buttons: [[btn('✅ 끝냈어요', `t3d:${t.id}`), btn('+30분', `t3s:${t.id}:30`)]], await: { kind: 'out', id: t.id } });
     if (now >= d + HOUR && now < d + 4 * HOUR) push('due', `due60:${t.id}:${d}`, { text: `마감이 1시간 지났어요: ${t.text}\n새 마감을 답장으로 보내 주세요 (예: 21시). 아니면 오늘은 접어요.`, buttons: [[btn('✅ 사실 끝냈어요', `t3d:${t.id}`), btn('오늘은 접기', `t3x:${t.id}`)]], await: { kind: 'due', id: t.id } });
+  }
+
+  // 3-1) 캘린더 일정: 30분 전에 한 번. 밤 10시 뒤엔 내일 일정을 한 줄로
+  for (const e of calendar?.upcoming || []) {
+    if (now >= e.start - 30 * MIN && now < e.start) push('cal', `cal:${e.uid}:${e.start}`, { text: `📅 ${Math.ceil((e.start - now) / MIN)}분 뒤: ${e.summary} (${fmt(e.start)})${e.location ? `\n📍 ${e.location}` : ''}`, buttons: [] });
+  }
+  if (calendar?.tomorrow?.length && now >= at('22:00') && now < at('23:59')) {
+    push('cal', 'cal:tomorrow', { text: `📅 내일 일정: ${calendar.tomorrow.map(e => (e.allDay ? `종일 ${e.summary}` : `${fmt(e.start)} ${e.summary}`)).join(' · ')}`, buttons: [] });
   }
 
   // 4) 예정 시각이 있는 약: 시각이 되면, 1시간 지나도 안 먹었으면 한 번 더

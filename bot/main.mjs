@@ -11,6 +11,7 @@ import { FileStorage, writeFileAtomic } from './lib/filestore.mjs';
 import { createTelegram } from './lib/telegram.mjs';
 import { createLLM } from './lib/llm.mjs';
 import { createBot, newPairCode } from './lib/bot.mjs';
+import { createBrief } from './lib/brief.mjs';
 
 // 업데이트 전에 "이 코드가 불러와지는지"만 확인할 때: node main.mjs --selftest
 if (process.argv.includes('--selftest')) {
@@ -37,7 +38,7 @@ function log(...parts) {
 }
 
 // ----- 설정 -----
-const KEYS = ['TELEGRAM_BOT_TOKEN', 'GITHUB_REPO', 'GITHUB_TOKEN', 'LLM_PROVIDER', 'GEMINI_API_KEY', 'GEMINI_MODEL', 'ANTHROPIC_API_KEY', 'CLAUDE_MODEL', 'WAKE_WEEKDAY', 'WAKE_WEEKEND', 'QUIET_FROM', 'QUIET_TO', 'APP_URL', 'AUTO_UPDATE'];
+const KEYS = ['TELEGRAM_BOT_TOKEN', 'GITHUB_REPO', 'GITHUB_TOKEN', 'LLM_PROVIDER', 'GEMINI_API_KEY', 'GEMINI_MODEL', 'ANTHROPIC_API_KEY', 'CLAUDE_MODEL', 'WAKE_WEEKDAY', 'WAKE_WEEKEND', 'QUIET_FROM', 'QUIET_TO', 'APP_URL', 'AUTO_UPDATE', 'CALENDAR_ICS_URL'];
 const env = { ...loadEnv(path.join(here, '.env')) };
 for (const k of KEYS) if (process.env[k]) env[k] = process.env[k]; // 환경 변수가 있으면 그쪽이 먼저
 const need = ['TELEGRAM_BOT_TOKEN', 'GITHUB_TOKEN', 'GITHUB_REPO'].filter(k => !env[k]);
@@ -154,7 +155,10 @@ const version = () => {
 };
 opts.version = version;
 if (supervised) opts.requestUpdate = () => fs.writeFileSync(path.join(dataDir, 'update.flag'), '1');
-const bot = createBot({ store, sync, tg, llm, state, save, log, opts });
+// 아침 브리핑과 캘린더 (캘린더 주소는 비밀이라 기록에 쓰지 않는다)
+const calUrl = /^https:\/\//.test(env.CALENDAR_ICS_URL || '') ? env.CALENDAR_ICS_URL.trim() : '';
+const brief = createBrief({ store, calendarUrl: calUrl, log });
+const bot = createBot({ store, sync, tg, llm, brief, state, save, log, opts });
 
 let running = true;
 async function shutdown() {
@@ -202,6 +206,12 @@ async function check() {
       console.log(`[!] AI (${llm.provider}): ${e.message}. 지금은 AI 없이 켜고, 나중에 check.cmd로 다시 확인해요.`);
     }
   }
+  if (!calUrl) console.log('[-] 캘린더: 연결 안 함 (.env의 CALENDAR_ICS_URL)');
+  else {
+    await brief.refresh(true);
+    const cs = brief.status();
+    console.log(cs.error ? `[!] 캘린더: ${cs.error}. 주소를 다시 복사해 주세요.` : `[OK] 캘린더 (일정 ${cs.count}개 읽음)`);
+  }
   console.log(state.owner ? '[OK] 텔레그램 대화와 연결돼 있어요' : '[-] 아직 텔레그램과 연결 전이에요 (설치가 끝나면 코드를 알려 드려요)');
   process.exit(ok ? 0 : 1);
 }
@@ -239,8 +249,22 @@ async function main() {
 
   // 30초마다 먼저 말 걸 것 확인 (겹쳐 돌지 않게)
   // 감시 프로그램이 남긴 말(업데이트 결과)을 전하고, "꺼 줘" 표시가 있으면 깔끔하게 끈다
+  // .env를 고치면 스스로 꺼진다 (감시 프로그램이 바로 다시 켜서 새 설정을 읽는다)
+  const envFile = path.join(here, '.env');
+  const envTime = () => {
+    try {
+      return fs.statSync(envFile).mtimeMs;
+    } catch {
+      return 0;
+    }
+  };
+  const envAt = envTime();
   setInterval(async () => {
     if (fs.existsSync(path.join(dataDir, 'stop.flag'))) return shutdown();
+    if (supervised && envTime() !== envAt) {
+      log('.env가 바뀌어서 다시 켜요');
+      return shutdown();
+    }
     const nf = path.join(dataDir, 'notice.txt');
     if (!state.owner || !fs.existsSync(nf)) return;
     try {

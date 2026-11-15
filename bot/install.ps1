@@ -94,7 +94,8 @@ $lines = @(
   "QUIET_FROM=$(Def 'QUIET_FROM' '01:00')",
   "QUIET_TO=$(Def 'QUIET_TO' '06:30')",
   "APP_URL=$(Def 'APP_URL' 'https://jmchoi4u.github.io/today/')",
-  "AUTO_UPDATE=$(Def 'AUTO_UPDATE' 'on')"
+  "AUTO_UPDATE=$(Def 'AUTO_UPDATE' 'on')",
+  "CALENDAR_ICS_URL=$(Def 'CALENDAR_ICS_URL' '')"
 )
 [IO.File]::WriteAllLines($envFile, $lines, (New-Object Text.UTF8Encoding $false))
 # 이 계정만 읽을 수 있게

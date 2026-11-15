@@ -20,7 +20,8 @@ export const HELP = [
   '· 불편: … → 사장님 불편 한 줄',
   '· 약 먹었어 / 일어났어 / 나왔어',
   '· 오늘 → 지금 상태',
-  '명령: /focus 50 (집중 타이머), /stop, /pause (오늘 알림 끄기), /resume, /update (새 버전 받기)',
+  '· 브리핑 → 날씨·일정·식단·소식 다시 보기',
+  '명령: /focus 50 (집중 타이머), /stop, /pause (오늘 알림 끄기), /resume, /brief, /update (새 버전 받기)',
 ].join('\n');
 
 export function newPairCode() {
@@ -28,7 +29,7 @@ export function newPairCode() {
 }
 
 // state: { owner, pairCode, offset, sent: {day: {key: ts}}, awaiting, focus, paused, routineOff: {day: 1} }
-export function createBot({ store, sync, tg, llm = null, state, save = () => {}, now = Date.now, log = () => {}, opts = {} }) {
+export function createBot({ store, sync, tg, llm = null, brief = null, state, save = () => {}, now = Date.now, log = () => {}, opts = {} }) {
   const R = () => store.config().prefs?.rollover ?? 4;
   const today = () => C.dayKey(now(), R());
   let lastPull = 0;
@@ -44,9 +45,26 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
   const push = () => sync.syncNow({ pull: false }).catch(e => log('sync', e?.message));
 
   // ----- 보내기 -----
-  async function say(text, buttons) {
+  async function say(text, buttons, o) {
     if (!state.owner) return null;
-    return tg.send(state.owner, text, buttons);
+    return tg.send(state.owner, text, buttons, o);
+  }
+  // 아침 브리핑: 하루 한 번 (달라고 하면 언제든). 만들다 실패하면 조용히 넘어가고 다음에 다시 한다
+  async function sendBrief(key, { asked = false } = {}) {
+    if (!brief || !state.owner) return asked ? say('브리핑이 꺼져 있어요.') : null;
+    if (!asked && (state.sent[key]?.brief || !brief.enabled() || now() - (state.briefTry || 0) < 5 * MIN)) return null;
+    state.briefTry = now(); // 실패해도 5분에 한 번만 다시 해 본다
+    state.sent[key] = { ...(state.sent[key] || {}), brief: now() }; // 만드는 동안 두 번 보내지 않게 먼저 표시
+    save();
+    try {
+      const text = await brief.build(key);
+      await say(text, undefined, { html: true });
+    } catch (e) {
+      log('brief', e?.message);
+      if (!asked) delete state.sent[key].brief;
+      else await say('브리핑을 만들지 못했어요. 잠시 뒤에 다시 해 주세요.');
+      save();
+    }
   }
   function setAwait(a) {
     state.awaiting = a ? { ...a, until: now() + AWAIT_MS } : null;
@@ -280,6 +298,7 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
         save();
         return say('🔕 오늘은 먼저 말 걸지 않을게요. 내일 아침에 다시 켜져요. (/resume)');
       }
+      if (c === 'brief') return sendBrief(key, { asked: true });
       if (c === 'update') {
         if (!opts.requestUpdate) return say('자동 업데이트 없이 켜져 있어요. install.cmd를 다시 실행하면 켜져요.');
         opts.requestUpdate();
@@ -292,6 +311,7 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
       }
       return say(HELP);
     }
+    if (/^(?:오늘\s*)?브리핑[!.?]*$/.test(t)) return sendBrief(key, { asked: true });
     await pull().catch(() => {});
     const ctx = { now: now(), key, rollover: R(), awaiting: awaiting() };
     let parsed = parseMessage(t, ctx);
@@ -316,7 +336,8 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
     }
     if (!parsed) return say(`잘 못 알아들었어요.\n\n${HELP}`);
     const reply = await apply(parsed.actions, { llmReply });
-    return say(reply || llmReply || '알겠어요.');
+    await say(reply || llmReply || '알겠어요.');
+    if (parsed.actions.some(a => a.type === 'wake')) await sendBrief(today()); // 일어났다고 하면 바로 브리핑
   }
 
   async function onCallback(q) {
@@ -332,6 +353,7 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
       if (q.message?.message_id) tg.clearButtons(state.owner, q.message.message_id).catch(() => {});
       return;
     }
+    const wokeNow = kind === 'wake';
     if (kind === 'wake') reply = await apply([{ type: 'wake' }]);
     else if (kind === 'log') {
       const it = itemById(a, key);
@@ -381,6 +403,7 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
     // 같은 버튼을 두 번 누르지 않게 누른 메시지의 버튼은 지운다
     if (q.message?.message_id) tg.clearButtons(state.owner, q.message.message_id).catch(() => {});
     if (reply) await say(reply);
+    if (wokeNow) await sendBrief(key);
   }
 
   async function handleUpdate(u) {
@@ -417,6 +440,10 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
     if (now() - lastPull >= PULL_EVERY) await pull(true).catch(e => log('pull', e?.message));
     if (!state.owner) return;
     const key = today();
+    if (brief) await brief.refresh().catch(() => {});
+    // 일어난 기록이 생겼는데 (폰 앱에서 눌렀을 수도) 아직 브리핑을 안 보냈으면 보낸다. 일어난 지 4시간 안에만
+    const wokeAt = C.wakeOf(store.day(key));
+    if (brief && wokeAt && now() - wokeAt <= 4 * HOUR && state.paused !== key) await sendBrief(key);
     const build = () => {
       const day = store.day(key);
       const prevKey = C.addDays(key, -1);
@@ -431,6 +458,7 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
         profiles: store.meds(),
         state: { focus: state.focus, routineOff: !!state.routineOff[key] },
         opts,
+        calendar: brief?.calendarFor(key, R()) || null,
       }).filter(p => !state.sent[key]?.[p.key] && (state.paused !== key || p.kind === 'focus'));
     };
     let pings = build();
@@ -460,5 +488,5 @@ export function createBot({ store, sync, tg, llm = null, state, save = () => {},
     for (const k of Object.keys(state.routineOff)) if (k < C.addDays(key, -3)) delete state.routineOff[k];
   }
 
-  return { handleUpdate, tick, apply, statusText, startFocus, endFocus, pull };
+  return { handleUpdate, tick, apply, statusText, startFocus, endFocus, pull, sendBrief };
 }
