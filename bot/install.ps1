@@ -65,12 +65,15 @@ $repo = Ask '   기록 저장소 (계정/이름)' (Def 'GITHUB_REPO' 'jmchoi4u/t
 $ght = Ask '   GitHub 토큰' $cur['GITHUB_TOKEN'] -Secret
 
 Say ''
-Say '3) AI (규칙으로 못 알아들은 말만 AI에게 물어봐요)' 'Cyan'
-Say '   gemini = 무료 (aistudio.google.com → Get API key)  /  claude = 유료  /  none = AI 없이'
+Say '3) AI (claude면 모든 말을 AI가 먼저 읽는 두뇌 모드, gemini면 규칙으로 못 알아들은 말만)' 'Cyan'
+Say '   claude = 유료, 월 몇천 원 (console.anthropic.com)  /  gemini = 무료 (aistudio.google.com)  /  none = AI 없이'
 $prov = (Ask '   고르기 (gemini/claude/none)' (Def 'LLM_PROVIDER' 'gemini')).ToLower()
 $gk = $cur['GEMINI_API_KEY']; $ak = $cur['ANTHROPIC_API_KEY']
 if ($prov -eq 'gemini') { $gk = Ask '   Gemini API 키' $gk -Secret }
 if ($prov -eq 'claude') { $ak = Ask '   Claude API 키 (console.anthropic.com)' $ak -Secret }
+# 예전 설치가 적어 둔 opus는 같은 사용량에 약 40배라, claude를 고르면 모델을 한 번 묻는다
+$cm = Def 'CLAUDE_MODEL' 'claude-haiku-5-5'
+if ($prov -eq 'claude') { $cm = Ask '   Claude 모델 (haiku = 월 몇천 원, opus = 약 40배)' $(if ($cm -eq 'claude-opus-5-5') { 'claude-haiku-5-5' } else { $cm }) }
 
 Say ''
 Say '4) 시각 (Enter = 그대로)' 'Cyan'
@@ -88,7 +91,8 @@ $lines = @(
   "GEMINI_API_KEY=$gk",
   "GEMINI_MODEL=$(Def 'GEMINI_MODEL' 'gemini-flash-latest')",
   "ANTHROPIC_API_KEY=$ak",
-  "CLAUDE_MODEL=$(Def 'CLAUDE_MODEL' 'claude-opus-5-5')",
+  "CLAUDE_MODEL=$cm",
+  "LLM_FULL_CONTEXT=$(Def 'LLM_FULL_CONTEXT' '')",
   "WAKE_WEEKDAY=$wd",
   "WAKE_WEEKEND=$we",
   "QUIET_FROM=$(Def 'QUIET_FROM' '01:00')",

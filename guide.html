@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#a6dbf6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1530" media="(prefers-color-scheme: dark)">
+<title>오늘 설명서</title>
+<link rel="icon" href="icons/icon-192.png">
+<style>
+:root{--bg:#f4f8fc;--panel:#fff;--ink:#1c2740;--mut:#5b6884;--line:#d5deec;--accent:#e0701a;--soft:#fff3e6;--code:#eef2f8}
+@media (prefers-color-scheme: dark){:root{--bg:#0f1530;--panel:#182044;--ink:#eaf0ff;--mut:#a3b0d0;--line:#2c3765;--accent:#f0913f;--soft:#2a2440;--code:#222c58}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif;-webkit-text-size-adjust:100%}
+main{max-width:720px;margin:0 auto;padding:20px 16px 64px}
+h1{font-size:26px;margin:8px 0 4px}
+h2{font-size:20px;margin:36px 0 10px;padding-top:14px;border-top:2px solid var(--line)}
+h3{font-size:16.5px;margin:22px 0 6px}
+p{margin:8px 0}
+.lead{color:var(--mut);margin-top:0}
+a{color:var(--accent)}
+.back{display:inline-block;margin:4px 0 10px;text-decoration:none;font-weight:600}
+ul{margin:6px 0;padding-left:20px}
+li{margin:4px 0}
+code{background:var(--code);border-radius:5px;padding:1px 6px;font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-word}
+.card{background:var(--panel);border:1.5px solid var(--line);border-radius:14px;padding:12px 14px;margin:12px 0}
+.three{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+.three .card{margin:0}
+.three b{display:block;font-size:17px;margin-bottom:2px}
+.tw{overflow-x:auto;margin:10px 0}
+table{border-collapse:collapse;width:100%;min-width:320px;background:var(--panel);border-radius:12px;overflow:hidden}
+th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--line);font-size:15px}
+th{background:var(--soft);font-weight:700}
+tr:last-child td{border-bottom:0}
+td:first-child{min-width:150px}
+.toc{columns:2;column-gap:20px;padding-left:20px}
+@media (max-width:480px){.toc{columns:1}}
+.note{background:var(--soft);border-left:4px solid var(--accent);border-radius:8px;padding:10px 12px;margin:12px 0}
+.mut{color:var(--mut);font-size:14.5px}
+</style>
+</head>
+<body>
+<main>
+<a class="back" href="./">← 앱으로</a>
+<h1>오늘 설명서</h1>
+<p class="lead">앱과 텔레그램 비서가 무엇을 하는지 한 곳에 모았어요. 앱 v1.7.4 기준이에요.</p>
+
+<div class="three">
+  <div class="card"><b>📱 앱</b>하루를 기록하고 보는 화면이에요. 폰 홈 화면에 추가해서 써요.</div>
+  <div class="card"><b>💬 비서</b>정한 시각에 텔레그램으로 먼저 말을 걸고, 답장을 기록으로 남겨요.</div>
+  <div class="card"><b>🧠 두뇌</b>비서가 내 말을 앞뒤 대화와 함께 읽고, 나에 대한 것을 기억해요.</div>
+</div>
+<p class="mut">셋은 같은 기록을 써요. 어느 쪽에서 남겨도 다른 쪽에 보여요. 기록은 내 비공개 저장소에만 있어요.</p>
+
+<ol class="toc">
+  <li><a href="#app">앱</a></li>
+  <li><a href="#say">비서에게 보내는 말</a></li>
+  <li><a href="#cmd">비서 명령</a></li>
+  <li><a href="#ping">비서가 먼저 말 거는 때</a></li>
+  <li><a href="#brain">두뇌 모드와 기억</a></li>
+  <li><a href="#quiet">알림 줄이기</a></li>
+  <li><a href="#pc">비서 PC와 업데이트</a></li>
+  <li><a href="#set">설정 바꾸기</a></li>
+  <li><a href="#cost">비용과 개인정보</a></li>
+  <li><a href="#fix">문제가 생기면</a></li>
+  <li><a href="#not">아직 없는 것</a></li>
+</ol>
+
+<h2 id="app">1. 앱</h2>
+
+<h3>오늘 탭</h3>
+<ul>
+  <li><b>타일:</b> 한 번 누르면 기록해요. 체크한 타일을 다시 누르면 시각을 고쳐요. 타일의 ⋯에서 건너뛰기와 지난 시각 기록을 해요.</li>
+  <li><b>아침 루틴:</b> 일어나고 4시간 동안 보여요. 단계마다 목표 시각이 있고, 맨 위 줄이 집 밖으로 나가는 마감이에요.</li>
+  <li><b>핵심 3가지:</b> 오늘 끝낼 일과 마감 시각을 정해요. 끝내면 결과물 한 줄을 남겨요.</li>
+  <li><b>코치 카드:</b> 지금 할 한 가지를 보여 줘요. "나중에"를 누르면 잠시 뒤 다시 물어요.</li>
+  <li><b>집중 타이머:</b> 25분과 50분. 끝나면 집중 기록으로 남아요.</li>
+  <li><b>주차장:</b> 걱정이나 새 아이디어를 한 줄 적고 하던 일로 돌아가요. 적은 날은 저녁에 걱정 시간 카드가 떠요.</li>
+  <li><b>D-day:</b> 정해 둔 날짜까지 남은 날을 위에 보여 줘요.</li>
+</ul>
+
+<h3>흐름·약 탭</h3>
+<ul>
+  <li><b>＋ 기록 추가:</b> 기상, 취침, 집중과 모든 항목을 원하는 시각에 넣어요. 지난 날짜도 돼요.</li>
+  <li><b>하루 흐름:</b> 기록을 시간순으로 보고, 줄을 눌러 시각과 내용을 고치거나 지워요.</li>
+  <li><b>하루 시간표:</b> 정해 둔 시간표에서 지금 칸이 밝게 보여요.</li>
+  <li><b>약:</b> 효과 곡선, 복용 기록, 지금 먹으면 언제까지 가는지, 내 기록으로 본 집중이 잘 된 시간대를 보여 줘요.</li>
+</ul>
+
+<h3>성장 탭</h3>
+<ul>
+  <li><b>메인 퀘스트:</b> 지금 단계의 과제를 누르면 경험치가 올라요. 숫자가 붙은 과제는 기록에서 자동으로 세요.</li>
+  <li><b>레벨과 스탯:</b> 목표를 채우면 등급이 올라요.</li>
+  <li><b>주간 리뷰:</b> 정한 요일과 시각에 물어요. 한 주 기록과 지난번 숫자가 미리 채워져 있어요.</li>
+</ul>
+
+<h3>설정 탭</h3>
+<ul>
+  <li><b>내 항목:</b> 항목을 넣고, 고치고, 순서를 바꿔요. 예정 시각도 여기서 정해요.</li>
+  <li><b>D-day, 하루가 바뀌는 시각, 시즌 시작일</b></li>
+  <li><b>GitHub 동기화:</b> 비공개 저장소에 연결하면 폰, 다른 기기, 비서가 같은 기록을 써요.</li>
+  <li><b>날씨·햇빛, 위치, 화면(밝게·어둡게)</b></li>
+  <li><b>데이터:</b> 파일로 내보내고 가져와요.</li>
+  <li>인터넷이 없어도 열려요. 다시 연결되면 알아서 맞춰요.</li>
+</ul>
+
+<h2 id="say">2. 비서에게 보내는 말</h2>
+<p>평소 말투로 보내면 돼요. 알림에 붙은 버튼을 눌러도 같아요.</p>
+<div class="tw"><table>
+<tr><th>보내는 말</th><th>하는 일</th></tr>
+<tr><td><code>코테 2문제 21시</code><br><code>1시간 뒤 메일 답장</code></td><td>오늘 핵심과 마감을 잡아요. 30분 전, 마감 때, 1시간 지나서 알려요.</td></tr>
+<tr><td><code>내일 10시 코테</code></td><td>내일 핵심으로 넣어요.</td></tr>
+<tr><td><code>끝</code><br><code>끝 풀이 올림</code></td><td>가장 급한 핵심을 끝낸 걸로 하고 결과물 한 줄을 남겨요.</td></tr>
+<tr><td><code>약 먹었어</code><br><code>일어났어</code> <code>나왔어</code></td><td>지금 시각으로 기록해요.</td></tr>
+<tr><td><code>3시 10분에 약 먹었어</code><br><code>10시 반에 일어났어</code></td><td>지난 일은 그 시각으로 기록해요. 이미 남긴 기록이면 시각을 고쳐요.</td></tr>
+<tr><td><code>걱정: …</code></td><td>주차장에 넣어요. 걱정 시간에 같이 봐요.</td></tr>
+<tr><td><code>불편: …</code></td><td>불편 한 줄로 남겨요.</td></tr>
+<tr><td><code>되돌려</code></td><td>비서가 방금 남긴 기록을 취소해요. 6시간 안, 세 번까지예요.</td></tr>
+<tr><td><code>기억해: …</code> (쌍점 필요)<br><code>기억</code> <code>잊어 m3</code></td><td>오래 기억할 사실을 넣고, 보고, 지워요. 두뇌 모드에서만 돼요.</td></tr>
+<tr><td><code>오늘</code></td><td>지금 상태를 보여 줘요.</td></tr>
+<tr><td><code>브리핑</code></td><td>아침 브리핑을 다시 보여 줘요.</td></tr>
+<tr><td><code>아니</code> <code>취소</code></td><td>비서가 묻던 질문을 넘겨요.</td></tr>
+</table></div>
+<div class="note">비서는 확실할 때만 기록해요. "약 안 챙겼어", "알람은 7시였는데 9시에 깼어", "동생이 7시에 깼어", "떡볶이 먹었어" 같은 말은 기록하지 않아요. 어느 약인지 모르면 버튼으로 물어요.</div>
+
+<h2 id="cmd">3. 비서 명령</h2>
+<div class="tw"><table>
+<tr><th>명령</th><th>하는 일</th></tr>
+<tr><td><code>/focus 50</code></td><td>집중 타이머를 시작해요. 끝나면 기록하고 뭐 했는지 물어요.</td></tr>
+<tr><td><code>/stop</code></td><td>타이머를 멈추고 한 만큼 기록해요.</td></tr>
+<tr><td><code>/pause</code></td><td>오늘은 먼저 말 걸지 않아요. 다음 날 아침에 다시 켜져요.</td></tr>
+<tr><td><code>/resume</code></td><td>다시 챙겨요. 쉬던 알림과 꺼 둔 아침 루틴 알림도 다시 켜요.</td></tr>
+<tr><td><code>/brief</code></td><td>아침 브리핑을 보여 줘요.</td></tr>
+<tr><td><code>/today</code></td><td>지금 상태를 보여 줘요.</td></tr>
+<tr><td><code>/update</code></td><td>새 버전이 있으면 바로 받아요. 평소엔 10분마다 알아서 받아요.</td></tr>
+<tr><td><code>/help</code></td><td>짧은 도움말을 보여 줘요.</td></tr>
+</table></div>
+
+<h2 id="ping">4. 비서가 먼저 말 거는 때</h2>
+<ul>
+  <li><b>기상 확인:</b> 정한 시각에 "일어났어요?"를 물어요. 한참 늦게 누르면 실제로 일어난 시각을 한 번 물어요.</li>
+  <li><b>아침 브리핑:</b> 일어났다고 하면 한 번 와요. 날씨, 미세먼지, 옷차림, 오늘 일정, 식단, 소식 세 줄이에요.</li>
+  <li><b>아침 루틴:</b> 단계마다 목표 시각에 한 번씩, 그리고 출발 10분 전과 출발 시각에 알려요.</li>
+  <li><b>약:</b> 예정 시각에 알리고, 1시간 지나도 기록이 없으면 한 번 더 알려요. 답장으로 먹은 시각을 보내도 돼요.</li>
+  <li><b>약 효과가 가장 높은 구간:</b> 시작될 때 집중 타이머를 권해요. 3시간에 한 번까지만 보내요.</li>
+  <li><b>핵심 마감:</b> 30분 전, 마감 때, 1시간 지났을 때 알려요.</li>
+  <li><b>캘린더:</b> 연결했으면 일정 30분 전과, 밤 10시 뒤에 내일 일정을 알려요.</li>
+  <li><b>저녁:</b> 매일 한 줄, 걱정 시간(주차장에 적은 날만), 밤 규칙과 내일 첫 결과물, 소등 30분 전.</li>
+  <li><b>주간 리뷰:</b> 정한 요일과 시각에 초안을 보내요.</li>
+  <li>같은 알림은 하루 한 번이에요. 조용한 시간(기본 01:00~06:30)엔 말 걸지 않아요.</li>
+</ul>
+
+<h2 id="brain">5. 두뇌 모드와 기억</h2>
+<p>비서의 AI를 Claude로 두면 켜져요. 꺼져 있으면 정해진 말만 알아듣고, 모르는 말만 AI에게 물어요.</p>
+<ul>
+  <li><b>앞뒤를 보고 읽어요:</b> 모든 말을 AI가 오늘 상태와 최근 12시간 대화 20개를 같이 보고 읽어요. 그래서 "지금 일어난 건 아니고" 같은 말도 알아들어요.</li>
+  <li><b>정해진 행동만 해요:</b> AI는 핵심 정하기, 끝내기, 기록, 약, 기상, 타이머, 되돌리기 같은 정해진 행동만 고를 수 있고, 답은 비서가 한 번 더 검사해요. 검사에서 걸리면 규칙으로 다시 풀어요.</li>
+  <li><b>AI가 안 될 때:</b> 규칙으로 처리해요. 비서가 멈추지 않아요.</li>
+</ul>
+
+<h3>기억 3층</h3>
+<p>비공개 저장소의 <code>brain</code> 폴더에 글 파일로 남아요. 직접 고쳐도 되고, 저장소 기록으로 되돌릴 수 있어요.</p>
+<div class="tw"><table>
+<tr><th>파일</th><th>무엇</th></tr>
+<tr><td><code>profile.md</code></td><td>내가 직접 쓰는 "나는 이런 사람, 이렇게 대해 줘". 비서는 읽기만 해요.</td></tr>
+<tr><td><code>memory.md</code></td><td>오래 갈 사실 목록(최대 60줄). <code>기억해: …</code>로 넣어요.</td></tr>
+<tr><td><code>log/날짜.md</code></td><td>그날 일지. 하루가 바뀌면 비서가 어제 대화로 써요.</td></tr>
+</table></div>
+<ul>
+  <li><b>밤 정리:</b> 하루가 바뀌면 한 번, 어제 대화로 일지를 쓰고 기억을 고칠 제안을 최대 3개 받아요. 검사를 통과한 것만 반영하고, 메시지는 보내지 않아요. 어제 내가 한 말이 없으면 AI를 부르지 않아요.</li>
+  <li>다음 날 대화에는 profile, 기억, 어제 일지가 같이 들어가요.</li>
+</ul>
+
+<h3>안전장치</h3>
+<ul>
+  <li>약 이름, 별명, 용량은 AI에게 보내기 전에 "[아침 약]" 같은 이름표로 바꿔요. 기록에는 내가 쓴 말 그대로 남아요.</li>
+  <li>AI가 고른 되돌리기는 10분 안에 남긴 기록에만 통해요.</li>
+  <li>힘든 마음을 말하면 AI에게 보내지 않고, 자살예방 상담전화 109와 119를 안내하고 그날 알림을 멈춰요.</li>
+  <li>AI는 약의 용량이나 시간을 바꾸라고 하지 않아요.</li>
+  <li>AI 사용은 하루 150번까지예요.</li>
+</ul>
+
+<h2 id="quiet">6. 알림 줄이기</h2>
+<ul>
+  <li><b>답이 없으면 쉬어요:</b> 같은 종류의 알림에 사흘 연속 반응이 없으면 그 종류는 3일 쉬어요. 낮에 한 번 알려 주고 "다시 받기" 버튼을 줘요.</li>
+  <li><b>한동안 조용하면:</b> 36시간 아무 반응이 없으면 약, 마감, 일정, 출발 마감, 첫 기상 확인만 남기고 한 번만 가볍게 물어요.</li>
+  <li><b>돌아오기:</b> 텔레그램에서 말하거나 버튼을 누르면, 또는 앱에서 기록하면 바로 돌아와요. <code>/resume</code>은 쉬던 알림을 모두 켜요.</li>
+  <li>약(아침 루틴의 약 단계 포함), 내가 정한 마감, 캘린더 일정, 집중 타이머 끝 알림은 줄이지 않아요.</li>
+  <li>알림마다 있는 "오늘 루틴은 그만" 버튼과 <code>/pause</code>로 직접 끌 수도 있어요.</li>
+</ul>
+
+<h2 id="pc">7. 비서 PC와 업데이트</h2>
+<ul>
+  <li>비서는 집에 켜 둔 Windows PC 한 대에서 돌아요. 모니터는 꺼도 돼요.</li>
+  <li><b>항상 켜 두기:</b> 설정 → 시스템 → 전원에서 절전 모드를 "안 함"으로 해요.</li>
+  <li><b>정전 뒤 자동으로 켜지게:</b> 부팅할 때 F2 → Power → AC Recovery를 Power On으로 해요.</li>
+  <li><b>자동 업데이트:</b> 10분마다 새 버전을 확인해서 받고, 검사를 통과하면 바꿔 끼워요. 문제가 생기면 이전 버전으로 돌아가요. 바뀌면 텔레그램으로 알려요.</li>
+  <li><b>잘 도는지:</b> 텔레그램에 <code>오늘</code>을 보내 답이 오면 돼요. 자세한 기록은 <code>bot\data\bot.log</code>에 있어요.</li>
+</ul>
+
+<h2 id="set">8. 설정 바꾸기</h2>
+<p>항목과 예정 시각은 앱 설정 탭에서 바꿔요. 비서 설정은 PC의 <code>bot\.env</code> 파일을 메모장으로 고치고 저장하면 비서가 스스로 다시 켜져요.</p>
+<div class="tw"><table>
+<tr><th><code>.env</code> 줄</th><th>뜻</th></tr>
+<tr><td><code>LLM_PROVIDER</code></td><td><code>claude</code>(두뇌 모드, 유료) / <code>gemini</code>(무료) / <code>none</code>(AI 없이)</td></tr>
+<tr><td><code>ANTHROPIC_API_KEY</code></td><td>Claude 키. console.anthropic.com에서 만들어요.</td></tr>
+<tr><td><code>CLAUDE_MODEL</code></td><td><code>claude-haiku-5-5</code>를 권해요. <code>claude-opus-5-5</code>는 같은 사용량에 약 40배예요.</td></tr>
+<tr><td><code>WAKE_WEEKDAY</code><br><code>WAKE_WEEKEND</code></td><td>일어났는지 물어보는 시각</td></tr>
+<tr><td><code>QUIET_FROM</code><br><code>QUIET_TO</code></td><td>말 걸지 않는 시간대</td></tr>
+<tr><td><code>CALENDAR_ICS_URL</code></td><td>구글 캘린더의 "iCal 형식의 비공개 주소". 읽기만 해요.</td></tr>
+<tr><td><code>AUTO_UPDATE</code></td><td><code>on</code>이면 알아서 받고, <code>off</code>면 <code>/update</code>라고 할 때만 받아요.</td></tr>
+</table></div>
+<p>바꾼 뒤 <code>check.cmd</code>를 실행하면 텔레그램, 저장소, AI, 캘린더가 연결됐는지 보여 줘요. 루틴 단계, 시간대 규칙, 브리핑 내용은 비공개 저장소의 <code>game.json</code>에 있어요.</p>
+
+<h2 id="cost">9. 비용과 개인정보</h2>
+<ul>
+  <li><b>Gemini 무료:</b> 돈이 들지 않아요. 다만 보낸 내용이 구글 제품 개선에 쓰일 수 있어서, 모르는 말과 항목 이름, 오늘 핵심만 보내요.</li>
+  <li><b>Claude Haiku 5.5:</b> 하루 메시지 15~40개면 한 달 약 2천~3천 원이에요. 하루 한도를 다 써도 1만 원 안팎이에요. Anthropic 약관상 API로 보낸 내용은 학습에 쓰지 않아요. 콘솔에서 월 한도를 걸어 두세요.</li>
+  <li><b>AI에게 가는 것(두뇌 모드):</b> 오늘 상태, 최근 대화 20개, 새 메시지, 기억 파일. 밤 정리 때는 그날 대화. 약 이름은 가려서 보내요. 설정에 없는 약 이름을 직접 쓰면 그대로 가니, 자주 쓰는 이름은 약 항목의 별명에 넣어 두세요.</li>
+  <li><b>기록이 있는 곳:</b> 내 폰, 비서 PC, 내 비공개 저장소. 토큰과 키는 비서 PC의 <code>.env</code>에만 있어요.</li>
+  <li><b>그 밖에 연결하는 곳:</b> 날씨(Open-Meteo, 위치는 약 10km 단위), 구글 뉴스(키워드만), 내 캘린더 주소(읽기만).</li>
+  <li>비서는 처음 연결한 대화 하나의 말만 들어요. 다른 사람의 메시지와 버튼은 무시해요.</li>
+</ul>
+
+<h2 id="fix">10. 문제가 생기면</h2>
+<div class="tw"><table>
+<tr><th>증상</th><th>해 볼 것</th></tr>
+<tr><td>비서가 답이 없어요</td><td>PC가 켜져 있는지 보고, <code>check.cmd</code>를 실행해요.</td></tr>
+<tr><td>잘못 기록했어요</td><td><code>되돌려</code>를 보내거나, 앱의 흐름 탭에서 그 줄을 눌러 고쳐요.</td></tr>
+<tr><td>알림이 안 와요</td><td><code>/resume</code>을 보내요. 조용한 시간이거나 쉬는 중일 수 있어요.</td></tr>
+<tr><td>알림이 너무 많아요</td><td>"오늘 루틴은 그만"이나 <code>/pause</code>. 답이 없으면 비서가 스스로 줄여요.</td></tr>
+<tr><td>AI가 엉뚱하게 답해요</td><td>어떤 말에 어떻게 답했는지 화면을 남겨 두면 고칠 수 있어요.</td></tr>
+<tr><td>앱이 옛 화면이에요</td><td>앱을 닫았다 다시 열어요. 설정 탭 맨 아래에 버전이 있어요.</td></tr>
+</table></div>
+
+<h2 id="not">11. 아직 없는 것</h2>
+<ul>
+  <li>갤럭시 워치 수면 기록 연결 (기상 시각을 자동으로 잡는 것)</li>
+  <li>음성으로 말하고 듣기</li>
+  <li>텔레그램에서 설정 바꾸기</li>
+  <li>앱을 여는 습관 추적</li>
+</ul>
+
+<p class="mut" style="margin-top:36px"><a href="./">← 앱으로 돌아가기</a></p>
+</main>
+</body>
+</html>

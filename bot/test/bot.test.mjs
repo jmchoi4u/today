@@ -7,13 +7,15 @@ import * as C from '../../js/core.js';
 import { createStore } from '../../js/store.js';
 import { createSync } from '../../js/sync.js';
 import { MemoryStorage, clock, fakeGitHub } from '../../tests/helpers.mjs';
-import { parseMessage, findTime } from '../lib/parse.mjs';
+import { parseMessage, findTime, isPastStatement, matchMed } from '../lib/parse.mjs';
 import { planPings, reportDraft } from '../lib/planner.mjs';
 import { createBot, newPairCode } from '../lib/bot.mjs';
 import { validate, createLLM, SCHEMA } from '../lib/llm.mjs';
 import { geminiJSON, parseJSONText } from '../lib/llm-gemini.mjs';
 import { parseEnv } from '../lib/env.mjs';
 import { FileStorage } from '../lib/filestore.mjs';
+import * as B from '../lib/brain.mjs';
+import { createMemory } from '../lib/memory.mjs';
 
 // 2026-11-13은 금요일, 11-14는 토요일
 const at = (h, m = 0, d = 13) => new Date(2026, 10, d, h, m).getTime();
@@ -27,7 +29,7 @@ function config() {
   c.items = c.items.filter(i => i.id !== 'med_pm');
   c.items.find(i => i.id === 'med_am').drugs = [{ id: 'long', mg: 1 }];
   c.items.push(
-    { id: 'med_pm', name: '오후 약', icon: '💊', cat: 'med', type: 'check', block: 'day', essential: true, plan: { time: '14:00' }, cue: '점심 먹고 바로', order: 20, m: 1 },
+    { id: 'med_pm', name: '오후 약', aliases: ['감마'], icon: '💊', cat: 'med', type: 'check', block: 'day', essential: true, plan: { time: '14:00' }, cue: '점심 먹고 바로', order: 20, m: 1 },
     { id: 'pain_note', name: '불편 한 줄', icon: '📝', cat: 'habit', type: 'log', ask: 'note', noteFirst: true, block: 'any', order: 21, m: 1 },
     { id: 'park', name: '주차장', icon: '🅿️', cat: 'habit', type: 'log', ask: 'note', noteFirst: true, block: 'any', order: 22, m: 1 },
     { id: 'apply', name: '지원', icon: '📨', cat: 'habit', type: 'count', block: 'any', order: 23, m: 1 },
@@ -394,7 +396,7 @@ test('비서: 모르는 말은 AI에게 묻고, AI 답은 검사한 행동만 �
   const llm = {
     parse: async (text, ctx) => {
       asked = { text, ctx };
-      return validate({ actions: [{ type: 'top3_set', text: '이력서 고치기', due: '22:00', item: '', id: '' }, { type: 'log', text: '', due: '', item: 'rm_rf', id: '' }], reply: '좋아요' }, ctx);
+      return validate({ actions: [{ type: 'top3_set', text: '이력서 고치기', time: '22:00', item: '', id: '' }, { type: 'log', text: '', time: '', item: 'rm_rf', id: '' }], reply: '좋아요' }, ctx);
     },
   };
   const bot = createBot({ store: h.store, sync: { syncNow: async () => {} }, tg: { send: async (c, t) => h.sent.push({ text: t }), answer: async () => {}, clearButtons: async () => {} }, llm, state: h.state, now: h.now, opts: OPTS });
@@ -409,8 +411,8 @@ test('비서: 모르는 말은 AI에게 묻고, AI 답은 검사한 행동만 �
 
 test('AI 답 검사: 모르는 행동·항목은 버리고, 칸은 잘라 낸다', () => {
   const ctx = { items: [{ id: 'water', name: '물' }], top3: [{ id: 't1', text: 'a' }] };
-  const v = validate({ actions: [{ type: 'hack' }, { type: 'log', item: 'water', text: 'x' }, { type: 'log', item: 'nope' }, { type: 'top3_done', id: 't9', text: '결과' }, { type: 'top3_set', text: 'b', due: '25시' }], reply: 'ok' }, ctx);
-  assert.deepEqual(v.actions, [{ type: 'note', item: 'water', note: 'x' }, { type: 'top3_done', id: 't1', out: '결과' }, { type: 'top3_set', text: 'b', dueText: '' }]);
+  const v = validate({ actions: [{ type: 'hack' }, { type: 'log', item: 'water', text: 'x' }, { type: 'log', item: 'nope' }, { type: 'top3_done', id: 't9', text: '결과' }, { type: 'top3_set', text: 'b', time: '25시' }], reply: 'ok' }, ctx);
+  assert.deepEqual(v.actions, [{ type: 'note', item: 'water', note: 'x', at: 0 }, { type: 'top3_done', id: 't1', out: '결과' }, { type: 'top3_set', text: 'b', dueText: '' }]);
   const two = { items: [], top3: [{ id: 't1', text: 'a' }, { id: 't2', text: 'b' }] };
   assert.deepEqual(validate({ actions: [{ type: 'top3_done', id: '', text: '' }], reply: '어느 거요?' }, two).actions, [], '어느 일인지 모르면 끝내지 않는다');
   assert.equal(validate(null, ctx), null);
@@ -496,4 +498,786 @@ test('안전: 같은 일을 다시 말해도 마감이 안 지워지고, AI가 �
   assert.ok(!fs.readFileSync(path.join(dir, 's.json'), 'utf8').includes('SECRET'), '비밀은 파일에 쓰지 않는다');
   assert.ok(s.getItem('today.local').includes('SECRET'));
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------- 지난 일과 정정 (11/15·11/17 실제 대화에서 나온 실수들) ----------------
+const MEDS = [
+  { id: 'med_am', name: '아침 약', words: ['알파정'] },
+  { id: 'med_pm', name: '오후 2시 감마', words: ['감마', '감마정', '서방'] },
+  { id: 'med_night', name: '자기 전 약', words: [] },
+];
+
+test('해석: 지난 일을 말하는 문장인지', () => {
+  for (const s of ['먹었어', '아니 이미 먹었다고', '끝냈습니다', '운동함', '감마 먹음', '어제 했던 거', '일어났어요'])
+    assert.equal(isPastStatement(s), true, s);
+  for (const s of ['코테 2문제 21시', '회의 있어 3시', '하겠어', '같이 할게', '함께 공부', '9시 회의'])
+    assert.equal(isPastStatement(s), false, s);
+  assert.equal(matchMed('오후 3시 10분에 감마 먹음', MEDS), 'med_pm');
+  assert.equal(matchMed('알파정 먹었어', MEDS), 'med_am');
+  assert.equal(matchMed('자기 전 약 먹었어', MEDS), 'med_night', '흔한 말뿐인 이름은 이름 통째로');
+  assert.equal(matchMed('약 먹었어', MEDS), null);
+});
+
+test('해석: 지난 일에 붙은 시각은 마감이 아니라 그때 한 일 (약)', () => {
+  const ctx = (h, mi, extra = {}) => ({ now: at(h, mi), key: KEY, rollover: 4, meds: MEDS, ...extra });
+  // 11/15 15:18: "오후 3시 10분에 감마 먹음" → 마감 질문이 아니라 오후 약 15:10
+  assert.deepEqual(parseMessage('오후 3시 10분에 감마 먹음', ctx(15, 18)).actions, [{ type: 'med', item: 'med_pm', at: at(15, 10) }]);
+  // 마감을 기다리는 중이어도 지난 일 문장은 마감 답이 아니다
+  assert.equal(parseMessage('아니 오후 3시 10분에 이미 먹었다고', ctx(15, 19, { awaiting: { kind: 'due', id: 't1' } })), null);
+  // 약 알림 뒤에는 약 이름이 없어도 그 약으로
+  const dose = ctx(15, 19, { awaiting: { kind: 'dose', item: 'med_pm' } });
+  assert.deepEqual(parseMessage('아니 3시 10분에 이미 먹었다고', dose).actions, [{ type: 'med', item: 'med_pm', at: at(15, 10) }]);
+  assert.deepEqual(parseMessage('먹었어', dose).actions, [{ type: 'med', item: 'med_pm', at: 0 }]);
+  assert.equal(parseMessage('점심 먹었어', dose), null, '밥 먹은 말은 약이 아니다');
+  assert.equal(parseMessage('약 까먹었어', ctx(9, 0)), null, '까먹었으면 기록하지 않는다');
+  assert.equal(parseMessage('약 안 먹었어', ctx(9, 0)), null);
+  assert.equal(parseMessage('손님이 약 먹었냐고 물어봄', ctx(18, 40, { awaiting: { kind: 'note', item: 'pain_note' } })).actions[0].type, 'note', '메모 안의 약 이야기는 메모');
+  assert.deepEqual(parseMessage('30분 전에 약 먹었어', ctx(15, 18)).actions, [{ type: 'med', item: null, at: at(14, 48) }]);
+  assert.deepEqual(parseMessage('알파정 9시 40분에 먹었어', ctx(10, 0)).actions, [{ type: 'med', item: 'med_am', at: at(9, 40) }]);
+  // 지난 일이면 할 일로 만들지 않고 AI에게 넘긴다. 앞으로 할 일은 그대로
+  assert.equal(parseMessage('3시에 운동했어', ctx(17, 0)), null);
+  assert.equal(parseMessage('코테 2문제 21시', ctx(17, 0)).actions[0].type, 'top3_set');
+  assert.equal(C.fmtTime(findTime('10시 반', { now: at(12, 40), key: KEY, past: true }).at), '10:30', '지난 일이면 지금 이전');
+  assert.equal(C.fmtTime(findTime('10시 반', { now: at(12, 40), key: KEY }).at), '22:30', '할 일이면 지금 이후');
+});
+
+test('해석: 기상 시각 고치기', () => {
+  const ctx = (h, mi, extra = {}) => ({ now: at(h, mi), key: KEY, rollover: 4, meds: MEDS, ...extra });
+  assert.deepEqual(parseMessage('지금 일어난 건 아니고', ctx(12, 36)).actions, [{ type: 'wake_ask' }]);
+  assert.deepEqual(parseMessage('아까 일어났어', ctx(12, 36)).actions, [{ type: 'wake_ask' }]);
+  assert.deepEqual(parseMessage('10시 반에 일어났어', ctx(12, 40)).actions, [{ type: 'wake', at: at(10, 30) }]);
+  assert.deepEqual(parseMessage('2시간 전에 깼어', ctx(12, 40)).actions, [{ type: 'wake', at: at(10, 40) }]);
+  const ask = ctx(12, 40, { awaiting: { kind: 'wake_at' } });
+  assert.deepEqual(parseMessage('10시 반쯤', ask).actions, [{ type: 'wake', at: at(10, 30), fix: true }], '물어본 답이라 바로 고친다');
+  assert.equal(parseMessage('9시 회의', ask).actions[0].type, 'top3_set', '"9시 회의"는 기상이 아니라 할 일');
+  assert.equal(parseMessage('기상청 예보 봤어?', ctx(9, 0)), null);
+  assert.equal(parseMessage('3시에 사고가 일어났어', ctx(17, 0)), null);
+  assert.equal(parseMessage('내일 7시 기상', ctx(22, 0))?.actions?.[0]?.type === 'wake', false, '내일 계획은 기상 기록이 아니다');
+  assert.deepEqual(parseMessage('아니', ctx(17, 0, { awaiting: { kind: 'due', id: 't1' } })).actions, [{ type: 'cancel' }]);
+});
+
+test('비서: 11/15 "오후 3시 10분에 감마 먹음"은 약 기록이고 할 일이 생기지 않는다. 버튼 뒤에 말한 시각은 고치기', async () => {
+  const h = harness(at(13, 59));
+  h.state.owner = 7;
+  h.store.setWake(KEY, at(9, 20));
+  h.store.logEvent(KEY, 'med_am', { t: at(9, 40) });
+  h.now.set(at(14, 1));
+  await h.bot.tick();
+  assert.ok(h.sent.some(s => /💊 오후 약/.test(s.text)));
+  assert.equal(h.state.doseAwait.item, 'med_pm', '약 알림의 답은 따로 기다린다');
+  h.now.set(at(15, 18));
+  await h.msg('오후 3시 10분에 감마 먹음');
+  assert.match(h.last(), /오후 약 15:10 기록했어요/);
+  assert.equal(C.top3Of(h.store.day(KEY)).length, 0, '"감마 먹음" 같은 가짜 할 일이 생기지 않는다');
+  assert.equal(C.itemState(h.store.day(KEY), { id: 'med_pm', type: 'check' }).last, at(15, 10));
+  // 버튼으로 먼저 눌렀다가 시각을 말하면 시각만 고친다
+  const h2 = harness(at(15, 19));
+  h2.state.owner = 7;
+  await h2.tap('log:med_pm');
+  await h2.msg('3시 10분에 감마 먹었어');
+  assert.match(h2.last(), /15:19 → 15:10으로 고쳤어요|15:19 → 15:10로 고쳤어요/);
+  assert.equal(C.live(h2.store.day(KEY)).filter(e => e.item === 'med_pm').length, 1);
+  // 약 이름(연결된 약)으로도 알아듣는다
+  const h3 = harness(at(10, 0));
+  h3.state.owner = 7;
+  h3.store.setMeds({ v: 1, drugs: [{ ...LONG, name: '알파정' }] });
+  await h3.msg('알파정 9시 40분에 먹었어');
+  assert.equal(C.itemState(h3.store.day(KEY), { id: 'med_am', type: 'check' }).last, at(9, 40));
+});
+
+test('비서: 11/17 한참 늦게 누른 기상은 실제 시각을 묻고, 고치면 지난 루틴·출발 알림은 쉰다', async () => {
+  const h = harness(at(12, 36));
+  h.state.owner = 7;
+  await h.tap('wake');
+  assert.match(h.last(), /12:36 기상/);
+  assert.match(h.last(), /더 일찍 일어났으면/);
+  assert.equal(h.state.awaiting.kind, 'wake_at');
+  await h.msg('지금 일어난 건 아니고');
+  assert.match(h.last(), /몇 시쯤 일어났어요/);
+  await h.msg('10시 반');
+  assert.equal(C.wakeOf(h.store.day(KEY)), at(10, 30));
+  assert.match(h.last(), /기상 10:30로 남겼어요 \(12:36 → 10:30\)\. 지난 아침 루틴 알림은 오늘은 쉴게요/);
+  const n = h.sent.length;
+  for (let t = at(12, 40); t <= at(13, 50); t += 5 * C.MIN) {
+    h.now.set(t);
+    await h.bot.tick();
+  }
+  assert.ok(!h.sent.slice(n).some(s => /까지\)|집 밖으로|출발 시간/.test(s.text)), '고친 뒤엔 루틴·출발 알림이 몰려오지 않는다');
+  // 제때 누르면 묻지 않는다
+  const h2 = harness(at(7, 10));
+  h2.state.owner = 7;
+  await h2.tap('wake');
+  assert.doesNotMatch(h2.last(), /더 일찍/);
+});
+
+test('비서: 마감 답이 또 지난 시각이면 더 묻지 않고, "아니"면 질문을 넘긴다', async () => {
+  const h = harness(at(17, 0));
+  h.state.owner = 7;
+  await h.msg('이력서 3시');
+  assert.match(h.last(), /15:00는 이미 지났어요/);
+  await h.msg('4시');
+  assert.match(h.last(), /16:00는 이미 지났어요. 다른 시각으로/);
+  await h.msg('2시');
+  assert.match(h.last(), /14:00도 이미 지났어요. "이력서" 마감은 비워 둘게요/);
+  assert.equal(h.state.awaiting, null);
+  h.state.awaiting = { kind: 'due', id: 't1', until: h.now() + C.HOUR };
+  await h.msg('아니');
+  assert.match(h.last(), /넘길게요/);
+  assert.equal(h.state.awaiting, null);
+});
+
+test('알림: 약 알림은 답장을 그 약으로 기다리고, 약 효과 구간 알림은 3시간에 한 번', () => {
+  const now = clock(at(14, 1));
+  const store = makeStore(now);
+  store.setWake(KEY, at(7, 0));
+  store.logEvent(KEY, 'med_am', { t: at(7, 0) });
+  assert.deepEqual(plan(store, now).find(x => x.key === 'dose:med_pm').await, { kind: 'dose', item: 'med_pm' });
+  store.logEvent(KEY, 'rt:shower');
+  store.logEvent(KEY, 'rt:out');
+  store.setTop3(KEY, 't1', { text: 'x', due: at(23, 0) });
+  let first = null;
+  for (let t = at(7, 0); t < at(20, 0); t += 10 * C.MIN) {
+    now.set(t);
+    if (plan(store, now).some(x => x.kind === 'peak')) {
+      first = t;
+      break;
+    }
+  }
+  assert.ok(first);
+  assert.ok(!plan(store, now, { sent: { 'peak:g:1': first - C.HOUR } }).some(x => x.kind === 'peak'), '1시간 전에 알렸으면 또 안 알린다');
+  assert.ok(plan(store, now, { sent: { 'peak:g:1': first - 4 * C.HOUR } }).some(x => x.kind === 'peak'));
+  assert.ok(plan(store, now).filter(x => x.kind === 'peak').length <= 1, '한 번에 하나');
+});
+
+test('해석: 아직 안 한 일은 한 걸로 기록하지 않는다 (독립 진단에서 나온 것들)', () => {
+  const ctx = (extra = {}) => ({ now: at(17, 30), key: KEY, rollover: 4, meds: MEDS, ...extra });
+  assert.equal(parseMessage('아직 안 나갔어', ctx()), null, '"아직 안 나갔어"는 출발이 아니다');
+  assert.equal(parseMessage('나왔어요', ctx()).actions[0].type, 'out');
+  assert.equal(parseMessage('아직 못 했어', ctx({ awaiting: { kind: 'out', id: 't1' } })), null, '결과물 질문에 "아직 못 했어"는 끝이 아니다');
+  assert.deepEqual(parseMessage('풀이 올림', ctx({ awaiting: { kind: 'out', id: 't1' } })).actions[0], { type: 'top3_done', id: 't1', out: '풀이 올림' });
+  assert.equal(parseMessage('끝이 안 보여', ctx()), null);
+  assert.equal(parseMessage('다 했어?', ctx()), null);
+  assert.deepEqual(parseMessage('끝 풀이 올림', ctx()).actions[0], { type: 'top3_done', id: null, out: '풀이 올림' });
+  assert.equal(parseMessage('배고파', ctx({ awaiting: { kind: 'top3' } })), null, '오늘 결과물 질문에 "배고파"는 할 일이 아니다');
+  assert.equal(C.fmtTime(parseMessage('코테 2문제 21시', ctx({ awaiting: { kind: 'top3' } })).actions[0].due), '21:00');
+  assert.equal(parseMessage('코테 2문제', ctx({ awaiting: { kind: 'tomorrow' } })).actions[0].key, '2026-11-14', '밤의 "내일 첫 결과물"은 시각 없이도 받는다');
+});
+
+test('비서: 기다리던 답이 아니면 질문을 놓아주고, 보고 받을 사람이 있으면 끝낼 때 보고 줄을 쓴다', async () => {
+  const h = harness(at(17, 0));
+  h.state.owner = 7;
+  h.state.awaiting = { kind: 'due', id: 't1', until: h.now() + C.HOUR };
+  await h.msg('몰라');
+  assert.equal(h.state.awaiting, null);
+  h.store.setTop3(KEY, 't1', { text: '견적서', due: at(18, 0), to: '형' });
+  await h.tap('t3d:t1');
+  assert.match(h.last(), /📨 형에게 보고: "견적서 끝냈어요"/);
+});
+
+test('해석: 약 알림 뒤라도 다른 음식을 먹은 말은 약이 아니고, 이름이 겹치면 물어본 약·안 먹은 약 먼저', () => {
+  const ctx = (extra = {}) => ({ now: at(14, 30), key: KEY, rollover: 4, meds: MEDS, dose: { kind: 'dose', item: 'med_pm' }, ...extra });
+  assert.equal(parseMessage('아침 먹었어', ctx()), null);
+  assert.equal(parseMessage('1시에 떡볶이 먹었어', ctx()), null);
+  assert.deepEqual(parseMessage('응 아까 먹었어', ctx()).actions, [{ type: 'med', item: 'med_pm', at: 0 }]);
+  const shared = [
+    { id: 'med_am', name: '아침 약', words: ['감마정'], taken: true },
+    { id: 'med_pm', name: '오후 약', words: ['감마정'], taken: false },
+  ];
+  assert.equal(parseMessage('3시 10분에 감마정 먹었어', ctx({ meds: shared, now: at(15, 18) })).actions[0].item, 'med_pm', '물어본 약');
+  assert.equal(parseMessage('감마정 먹었어', ctx({ meds: shared, dose: null })).actions[0].item, 'med_pm', '안 먹은 약');
+  assert.equal(parseMessage('감마정 먹었어', ctx({ meds: shared.map(m => ({ ...m, taken: true })), dose: null })), null, '둘 다 먹었으면 어느 것도 고치지 않는다 (AI에게)');
+  assert.equal(parseMessage('새벽 4시에 깼다가 다시 잤어', ctx({ now: at(9, 0) })), null, '다시 잤으면 기상이 아니다');
+});
+
+test('비서: 약 알림이 기상 시각 질문을 덮어쓰지 않고, 직접 남긴 기상은 묻고 바꾼다', async () => {
+  const h = harness(at(12, 36));
+  h.state.owner = 7;
+  await h.tap('wake');
+  assert.equal(h.state.awaiting.kind, 'wake_at');
+  h.now.set(at(12, 41));
+  await h.bot.tick(); // 루틴 "약" 단계 알림
+  assert.equal(h.state.awaiting.kind, 'wake_at', '약 알림이 기상 질문을 지우지 않는다');
+  assert.equal(h.state.doseAwait.item, 'med_am');
+  h.now.set(at(12, 42));
+  await h.msg('10시 반');
+  assert.equal(C.wakeOf(h.store.day(KEY)), at(10, 30));
+  // 직접 남긴 기상(07:05)을 다른 말로 바꾸려 하면 먼저 묻는다
+  const h2 = harness(at(7, 5));
+  h2.state.owner = 7;
+  await h2.tap('wake');
+  h2.now.set(at(9, 0));
+  await h2.msg('아기 6시에 깼어');
+  assert.match(h2.last(), /07:05 → 06:00로 고칠까요/);
+  assert.equal(C.wakeOf(h2.store.day(KEY)), at(7, 5));
+  await h2.msg('아니');
+  assert.equal(C.wakeOf(h2.store.day(KEY)), at(7, 5));
+  await h2.msg('6시 50분에 일어났어');
+  await h2.msg('응');
+  assert.equal(C.wakeOf(h2.store.day(KEY)), at(6, 50));
+  assert.equal(h2.state.routineOff[KEY], 1, '두 시간 넘게 지난 기상이면 지난 루틴은 쉰다');
+  await h2.msg('/resume');
+  assert.equal(h2.state.routineOff[KEY], undefined, '/resume으로 다시 켠다');
+});
+
+test('기록: 기상을 첫 기록으로 짐작하는 중이면 더 이른 기록이 들어올 때 따라가고, 출발 시각도 고칠 수 있다', async () => {
+  const h = harness(at(11, 0));
+  h.state.owner = 7;
+  h.store.logEvent(KEY, 'water', { autoWake: true });
+  assert.equal(C.wakeOf(h.store.day(KEY)), at(11, 0));
+  h.store.logEvent(KEY, 'med_am', { t: at(9, 30), autoWake: true });
+  assert.equal(C.wakeOf(h.store.day(KEY)), at(9, 30), '더 이른 기록으로 기상이 따라간다');
+  h.store.setWake(KEY, at(8, 0));
+  h.store.logEvent(KEY, 'water', { t: at(7, 0), autoWake: true });
+  assert.equal(C.wakeOf(h.store.day(KEY)), at(8, 0), '직접 남긴 기상은 그대로');
+  h.now.set(at(9, 10));
+  await h.tap('rt:out');
+  h.now.set(at(9, 12));
+  await h.msg('8시 반에 나왔어');
+  assert.equal(C.live(h.store.day(KEY)).find(e => e.item === 'rt:out').t, at(8, 30));
+  assert.match(h.last(), /출발 08:30/);
+});
+
+// ---------------- 독립 검토가 찾은 문장들: 규칙은 확실할 때만 기록한다 ----------------
+test('해석: 안 먹었거나 모르거나 남의 일·다른 날·가정·질문이면 약으로 기록하지 않는다', () => {
+  const ctx = (h, mi, extra = {}) => ({ now: at(h, mi), key: KEY, rollover: 4, meds: MEDS, ...extra });
+  const dose = { dose: { kind: 'dose', item: 'med_pm' } };
+  const notMed = (s, c) => {
+    const r = parseMessage(s, c);
+    assert.ok(!r || r.actions[0].type !== 'med', `"${s}"는 약 기록이 아니다 → ${JSON.stringify(r)}`);
+  };
+  for (const s of ['아 감마 안 챙겼다 ㅠ', '감마 복용 안 함', '오늘 알파정 먹었나?', '감마 먹은 다음에 커피 마셔도 돼?', '감마 복용 시간 언제야?',
+    '아 감마 먹었어야 했는데', '감마 먹었으면 좋았을 텐데', '감마 먹은 날은 잠이 안 와', '알파정 먹은 지 일주일 됐는데 입맛이 없어',
+    '어제 감마 먹었는데 잠을 못 잤어', '감마 먹었대 ㅋㅋ', '감마 챙겼어'])
+    notMed(s, ctx(13, 50));
+  for (const s of ['약 안 챙겼어 ㅠㅠ', '집에 두고 와서 못 챙겼어', '나 먹었나?', '아까 먹었어?', '먹었는지 기억이 안 나',
+    '햄버거 먹었어', '샐러드 먹었음', '떡볶이 먹음 ㅋㅋ', '짜장면 먹었어', '아침 먹었어', '토스트 먹었어', '2시 반에 국수 먹었어'])
+    notMed(s, ctx(14, 40, dose));
+  // 약 알림 뒤의 짧은 대답은 그 약
+  assert.deepEqual(parseMessage('먹었어', ctx(14, 40, dose)).actions, [{ type: 'med', item: 'med_pm', at: 0 }]);
+  assert.deepEqual(parseMessage('한 30분 전쯤 먹었어', ctx(14, 40, dose)).actions, [{ type: 'med', item: 'med_pm', at: at(14, 10) }]);
+  assert.deepEqual(parseMessage('ㅇㅇ 아까 먹음', ctx(14, 40, dose)).actions, [{ type: 'med', item: 'med_pm', at: 0 }]);
+  // 시각 해석: 자정 넘어 "1시"는 새벽 1시, "2시 30분 전"은 2시 30분, 오늘이 아닌 시각은 기록하지 않는다
+  assert.equal(parseMessage('1시에 자기 전 약 먹었어', ctx(2, 30, { now: at(2, 30, 14) })).actions[0].at, at(1, 0, 14));
+  assert.equal(parseMessage('2시 30분 전에 약 먹었어', ctx(16, 0)).actions[0].at, at(14, 30));
+  assert.equal(parseMessage('11시에 약 먹었어', ctx(7, 30)), null, '아직 안 온 시각(오늘 11시)이면 기록하지 않는다');
+});
+
+test('해석: 못 일어남·실패·알람·다른 사람·질문·바람·설정 말은 기상 기록이 아니다', () => {
+  const ctx = (h, mi, extra = {}) => ({ now: at(h, mi), key: KEY, rollover: 4, meds: MEDS, ...extra });
+  const notWake = (s, h, mi = 0) => {
+    const r = parseMessage(s, ctx(h, mi));
+    assert.ok(!r || !['wake', 'wake_ask'].includes(r.actions[0].type), `"${s}"는 기상 기록이 아니다 → ${JSON.stringify(r)}`);
+  };
+  for (const s of ['7시에 못 일어났어', '7시 기상 실패 ㅠ', '알람 7시에 맞춰놨는데 9시에 깼어', '7시 알람 못 듣고 9시에 깸', '5시에 깼다가 다시 잤어',
+    '동생이 7시에 깼어', '엄마가 6시에 깼대', '7시에 일어났나?', '7시에 일어났으면 좋겠다', '동생이 아까 일어났어'])
+    notWake(s, 9, 30);
+  notWake('9시에 일어났어야 했는데 11시에 일어남', 11, 30);
+  notWake('평일 7시 기상으로 바꿔줘', 21, 0);
+  notWake('3시에 사고 일어났어', 17, 0);
+  // 저녁에 "8시 반에 일어났어"는 아침 8시 반
+  assert.deepEqual(parseMessage('8시 반에 일어났어', ctx(21, 0)).actions, [{ type: 'wake', at: at(8, 30) }]);
+  assert.deepEqual(parseMessage('아까 10시에 일어남', ctx(12, 0)).actions, [{ type: 'wake', at: at(10, 0) }]);
+  assert.deepEqual(parseMessage('7시 20분 전에 깼어', ctx(10, 0)).actions, [{ type: 'wake', at: at(7, 20) }], '"20분 전"이 아니라 7시 20분');
+  // 메모를 기다리는 중이면 메모가 먼저
+  assert.equal(parseMessage('사장님이 아침 6시에 깼는데 문자 와서 짜증났대', ctx(18, 40, { awaiting: { kind: 'note', item: 'pain_note' } })).actions[0].type, 'note');
+  assert.equal(parseMessage('9시에 깼는데 바로 코테 2문제 풀었음', ctx(15, 0, { awaiting: { kind: 'fnote', ev: 'e1', key: KEY } })).actions[0].type, 'focus_note');
+});
+
+test('해석: "몇 시에 일어났어요?"에 머뭇거리거나 존댓말로 답해도 기상 시각으로, 가짜 할 일은 안 생긴다', () => {
+  const ask = { now: at(12, 40), key: KEY, rollover: 4, meds: MEDS, awaiting: { kind: 'wake_at' } };
+  for (const [s, h, mi] of [['10시 반이요', 10, 30], ['10시 반요', 10, 30], ['10시 30분이요', 10, 30], ['음 10시 반', 10, 30], ['아 10시 반', 10, 30],
+    ['10시 반 ㅋㅋ', 10, 30], ['한 10시쯤', 10, 0], ['한 10시?', 10, 0], ['10시 좀 넘어서', 10, 0], ['10시 조금 넘어서', 10, 0], ['9시 40분인가', 9, 40], ['10시요', 10, 0], ['10시예요', 10, 0]])
+    assert.deepEqual(parseMessage(s, ask)?.actions, [{ type: 'wake', at: at(h, mi), fix: true }], s);
+});
+
+test('해석: 마감·계획 말은 지난 일이 아니고, "아니 밤 9시"는 고친 마감 답이다', () => {
+  const ctx = (h, extra = {}) => ({ now: at(h, 0), key: KEY, rollover: 4, meds: MEDS, ...extra });
+  assert.equal(C.fmtTime(parseMessage('보고서 21시 마감', ctx(17)).actions[0].due), '21:00');
+  assert.equal(C.fmtTime(parseMessage('9시까지 과제 제출해야 함', ctx(17)).actions[0].due), '21:00');
+  assert.equal(C.fmtTime(parseMessage('3시에 병원 감', ctx(11)).actions[0].due), '15:00', '오전에 "3시에 병원 감"은 계획');
+  assert.equal(parseMessage('3시에 병원 감', ctx(17)), null, '오후 5시에 "3시에 병원 감"은 지난 일');
+  const due = { awaiting: { kind: 'due', id: 't1' } };
+  for (const s of ['9시 마감', '마감 9시', '9시까지 해야 함', '아니 밤 9시', '아니요 9시', '아니 10시까지'])
+    assert.equal(parseMessage(s, ctx(17, due)).actions[0].type, 'top3_due', s);
+  assert.equal(parseMessage('아니 그냥 10시에 코테', ctx(21, { awaiting: { kind: 'tomorrow' } })).actions[0].key, '2026-11-14');
+});
+
+test('비서: 어느 약인지 모르면 짐작하지 않고 버튼으로 묻고, 시각을 말하면 이미 먹은 약의 시각을 고친다', async () => {
+  const h = harness(at(10, 0));
+  h.state.owner = 7;
+  h.store.setWake(KEY, at(7, 0));
+  await h.msg('약 먹었어'); // 아침 약
+  assert.match(h.last(), /아침 약 10:00 기록/);
+  h.now.set(at(10, 5));
+  await h.msg('9시 반에 약 먹었어');
+  assert.match(h.last(), /아침 약 시각을 10:00 → 09:30로 고쳤어요/);
+  assert.ok(!C.itemState(h.store.day(KEY), { id: 'med_pm', type: 'check' }).count, '오후 약을 새로 기록하지 않는다');
+  // 아침 약을 안 먹은 날, 어느 때인지 모르는 시각이면 버튼으로 묻는다
+  const h2 = harness(at(20, 0));
+  h2.state.owner = 7;
+  h2.store.setWake(KEY, at(7, 0));
+  await h2.msg('30분 전에 약 먹었어');
+  const last = h2.sent.at(-1);
+  if (/어느 거예요/.test(last.text)) {
+    assert.ok(last.buttons[0].length >= 2);
+    await h2.tap(last.buttons[0][0].callback_data);
+    assert.ok(C.live(h2.store.day(KEY)).some(e => e.t === at(19, 30)));
+  } else assert.match(last.text, /19:30 기록/);
+});
+
+// ---------------- 두뇌 모드: 모든 말을 AI가 먼저 읽는다 (가짜 AI로 시험) ----------------
+function brainHarness(startTs, answer) {
+  const h = harness(startTs);
+  h.state.owner = 7;
+  const prompts = [];
+  const llm = {
+    provider: 'claude',
+    full: true,
+    parse: async (text, ctx) => {
+      prompts.push(ctx.prompt);
+      const out = await answer(text, ctx, prompts.length);
+      return validate(out, ctx);
+    },
+  };
+  const bot = createBot({ store: h.store, sync: { syncNow: async () => {} }, tg: { send: async (c, t, b) => h.sent.push({ text: t, buttons: b }), answer: async () => {}, clearButtons: async () => {} }, llm, state: h.state, now: h.now, opts: OPTS });
+  const msg = text => bot.handleUpdate({ message: { chat: { id: 7, type: 'private' }, from: { id: 7 }, text } });
+  const tap = data => bot.handleUpdate({ callback_query: { id: 'q', data, from: { id: 7 }, message: { message_id: 1, chat: { id: 7 }, reply_markup: { inline_keyboard: [[{ text: '☀️ 일어났어요', callback_data: 'wake' }]] } } } });
+  return { ...h, bot, msg, tap, prompts };
+}
+const act = (type, f = {}) => ({ type, text: '', time: '', item: '', id: '', min: '', day: '', ...f });
+const NAMES = ['감마', '긴 약', '오후 약', '알파정'];
+
+test('약 이름 가리기: 항목 이름·별명·용량을 이름표로', () => {
+  const masks = B.medMasks([
+    { id: 'med_am', name: '아침 약', block: 'am', words: ['알파정', '베타정'] },
+    { id: 'med_pm', name: '오후 2시 감마', block: 'day', words: ['감마', '감마정', '서방'] },
+    { id: 'x', name: '오후 영양제', block: 'day', words: ['영양제'] },
+  ]);
+  assert.deepEqual(masks.map(m => [m.code, m.label]), [['M1', '아침 약'], ['M2', '낮 약'], ['M3', '낮 약 2']]);
+  const s = B.redact('💊 약 + 물 한 잔 (알파정 18 + 베타정 20) / 💊 오후 2시 감마 · 빈속 X / 감마정 서방 5mg 먹음', masks);
+  for (const w of ['알파정', '베타정', '감마', '서방', ' 18', ' 20', '5mg']) assert.ok(!s.includes(w), `${w} → ${s}`);
+  assert.match(s, /\[아침 약\] \+ \[아침 약\]/);
+  assert.match(s, /💊 \[낮 약\] · 빈속 X/);
+});
+
+test('두뇌 모드: 11/17 흐름. 질문의 답은 규칙이 받고, 그 밖의 말은 AI가 앞뒤 대화와 오늘 상태를 보고 읽는다. 약 이름은 AI에게 가지 않는다', async () => {
+  const h = brainHarness(at(12, 36), text => {
+    if (/뭐부터/.test(text)) return { actions: [], reply: '아침 루틴은 건너뛰고 핵심 하나부터 정해요.' };
+    if (/감마/.test(text)) return { actions: [act('med', { item: 'M2', time: '15:10' })], reply: '' };
+    return { actions: [], reply: '' };
+  });
+  await h.tap('wake');
+  await h.msg('지금 일어난 건 아니고');
+  assert.match(h.last(), /몇 시쯤 일어났어요\?/);
+  await h.msg('10시 반');
+  assert.equal(C.wakeOf(h.store.day(KEY)), at(10, 30));
+  assert.match(h.last(), /기상 10:30로 남겼어요 \(12:36 → 10:30\)/);
+  assert.equal(h.prompts.length, 0, '비서가 물어본 질문의 답은 규칙이 받는다');
+  await h.msg('근데 오늘 늦게 시작해서 뭐부터 하지');
+  assert.equal(h.prompts.length, 1);
+  assert.match(h.prompts[0], /\(버튼\) ☀️ 일어났어요/, '누른 버튼이 최근 대화에 있다');
+  assert.match(h.prompts[0], /\[\d\d:\d\d 비서\] 몇 시쯤 일어났어요\?/, '비서가 했던 질문도 보인다');
+  assert.match(h.prompts[0], /기상: 10:30 \(사용자가 남긴 시각\)/);
+  assert.match(h.prompts[0], /## 새 메시지\n\[12:3\d 나\] 근데 오늘 늦게 시작해서 뭐부터 하지/);
+  assert.match(h.last(), /핵심 하나부터/);
+  h.now.set(at(15, 18));
+  await h.msg('오후 3시 10분에 감마 먹음');
+  assert.equal(C.itemState(h.store.day(KEY), { id: 'med_pm', type: 'check' }).last, at(15, 10));
+  for (const p of h.prompts) for (const w of NAMES) assert.ok(!p.includes(w), `AI에게 간 글에 "${w}"가 있다`);
+  assert.match(h.prompts[1], /\[15:18 나\] 오후 3시 10분에 \[낮 약\] 먹음/);
+  assert.match(h.prompts[1], /M2 낮 약: 14:00 예정, 아직/);
+});
+
+test('두뇌 모드: AI가 안 되면 규칙으로, 위기 신호는 AI 없이 정해진 글로, 되돌리기', async () => {
+  let calls = 0;
+  const h = brainHarness(at(15, 18), () => {
+    calls++;
+    throw new Error('Claude에 연결할 수 없어요');
+  });
+  await h.msg('오후 3시 10분에 감마 먹음');
+  assert.equal(C.itemState(h.store.day(KEY), { id: 'med_pm', type: 'check' }).last, at(15, 10), 'AI가 안 되면 규칙으로 처리');
+  await h.msg('되돌려');
+  assert.equal(C.itemState(h.store.day(KEY), { id: 'med_pm', type: 'check' }).count, 0, '방금 기록을 되돌린다');
+  assert.match(h.last(), /↩️ 되돌렸어요/);
+  const before = calls;
+  await h.msg('그냥 다 죽고 싶다');
+  assert.equal(calls, before, '위기 신호는 AI에게 보내지 않는다');
+  assert.match(h.last(), /109/);
+  assert.equal(h.state.paused, KEY, '그날 먼저 말 걸기는 멈춘다');
+});
+
+test('두뇌 모드: AI 답도 검사한다 (모르는 약 코드, 아직 안 온 시각, 없는 핵심은 버린다)', async () => {
+  const h = brainHarness(at(10, 0), () => ({ actions: [act('med', { item: 'M9' }), act('wake', { time: '11:00' }), act('top3_due', { id: 't3', time: '21:00' }), act('top3_set', { text: '코테 2문제', time: '21:00', day: 'tomorrow' })], reply: '' }));
+  await h.msg('아무 말');
+  assert.equal(C.live(h.store.day(KEY)).filter(e => e.item.startsWith('med')).length, 0);
+  assert.equal(C.wakeOf(h.store.day(KEY)), 0, '아직 안 온 기상 시각은 버린다');
+  const t = C.top3Of(h.store.day('2026-11-14'))[0];
+  assert.deepEqual([t.text, C.fmtTime(t.due)], ['코테 2문제', '21:00'], '내일 할 일은 내일로');
+});
+
+test('최근 대화: 40개까지 남기고, AI에게는 12시간 안의 20개만', () => {
+  const st = {};
+  for (let i = 0; i < 50; i++) B.remember(st, i % 2 ? 'bot' : 'me', `<b>말 ${i}</b>`, at(8, 0) + i * C.MIN);
+  assert.equal(st.history.length, 40);
+  assert.equal(st.history[0].text, '말 10', 'HTML은 글자만');
+  assert.equal(B.recentHistory(st, at(8, 49)).length, 20);
+  assert.equal(B.recentHistory(st, at(23, 0)).length, 0, '12시간 지난 대화는 보내지 않는다');
+});
+
+test('되돌리기: 비서가 바꾼 것만 되돌리고, 그 뒤 폰에서 남긴 기록은 그대로 둔다', async () => {
+  const h = harness(at(15, 18));
+  h.state.owner = 7;
+  await h.msg('3시 10분에 감마 먹었어');
+  h.store.logEvent(KEY, 'water', { t: at(15, 19) }); // 그 사이 폰에서 남긴 기록
+  await h.msg('되돌려');
+  assert.equal(C.itemState(h.store.day(KEY), { id: 'med_pm', type: 'check' }).count, 0);
+  assert.equal(C.live(h.store.day(KEY)).filter(e => e.item === 'water').length, 1, '폰 기록은 남는다');
+  await h.msg('되돌려');
+  assert.match(h.last(), /되돌릴 기록이 없어요/);
+});
+
+test('두뇌 모드: 비서가 물어본 질문의 답(집중 메모·결과물)은 규칙이 먼저 받는다', async () => {
+  let asked = 0;
+  const h = brainHarness(at(8, 0), () => {
+    asked++;
+    return { actions: [], reply: '' };
+  });
+  await h.msg('/focus 25');
+  h.now.set(at(8, 26));
+  await h.bot.tick();
+  assert.equal(h.state.awaiting.kind, 'fnote');
+  await h.msg('코테 1문제 풀이');
+  assert.equal(C.live(h.store.day(KEY)).find(e => e.item === 'focus').note, '코테 1문제 풀이');
+  assert.equal(asked, 0, '질문의 답은 AI에게 묻지 않는다');
+  await h.msg('오늘 좀 피곤하네');
+  assert.equal(asked, 1, '그 밖의 말은 AI가 먼저 읽는다');
+});
+
+test('해석: "먹었어"가 마지막 말일 때만 약 기록. 다른 낱말 속의 약 이름·"약간"은 약이 아니다', () => {
+  const ctx = (extra = {}) => ({ now: at(15, 18), key: KEY, rollover: 4, meds: MEDS, ...extra });
+  for (const s of ['저번 주에 감마 먹었는데 효과 없었어', '감마 먹었던 것 같은데', '감마 먹었을걸', '감마 먹었는데 졸려', '감마 복용량 늘었어',
+    '점심 약간 많이 먹었어', '코감마 보면서 밥 먹었어', '감마큐브 챙겨 먹었어', '아침 약속 있어서 일찍 먹었어'])
+    assert.equal(parseMessage(s, ctx()), null, s);
+  assert.equal(parseMessage('감마를 3시에 먹었어', ctx()).actions[0].item, 'med_pm', '조사가 붙어도 알아본다');
+  assert.equal(parseMessage('3시 10분에 감마 먹었어!! ㅋㅋ', ctx()).actions[0].at, at(15, 10));
+  assert.equal(parseMessage('됐어!', ctx()), null, '물어본 게 없으면 "됐어"는 질문 넘기기가 아니다');
+  // 두뇌 모드에서 규칙은 물어본 질문의 답만 받는다
+  const only = { onlyAnswers: true };
+  assert.equal(parseMessage('10시 반에 일어났어', ctx({ ...only, dose: { item: 'med_pm' } })), null, '약을 물어본 중에 기상 말은 AI가 읽는다');
+  assert.equal(parseMessage('먹었어', ctx({ ...only, dose: { item: 'med_pm' } })).actions[0].item, 'med_pm');
+  assert.equal(parseMessage('알파정 먹었어', ctx({ ...only, dose: { item: 'med_pm' } })), null, '다른 약 이야기는 AI가 읽는다');
+  assert.equal(parseMessage('코테 2문제 21시', ctx({ ...only, awaiting: { kind: 'wake_at' } })), null);
+});
+
+// ---------------- 기억 3층 (두뇌 모드) ----------------
+function memFiles(init = {}) {
+  const db = new Map(Object.entries(init).map(([k, v]) => [k, { text: v, sha: 's1' }]));
+  let n = 1;
+  return {
+    db,
+    get: async p => (db.has(p) ? { ...db.get(p) } : null),
+    put: async (p, text, sha) => {
+      if ((db.get(p)?.sha || null) !== (sha || null)) return { conflict: true };
+      db.set(p, { text, sha: `s${++n}` });
+      return { sha: `s${n}` };
+    },
+  };
+}
+
+
+test('기억: "기억해:"로 넣고, 대화마다 AI가 기억·어제 일지를 같이 보고, 하루가 바뀌면 밤 정리를 한 번 한다 (약 이름은 가려서)', async () => {
+  const files = memFiles({ 'brain/profile.md': '# 나\n반말로 짧게. 감마 얘기는 조심스럽게.', 'brain/log/2026-11-12.md': '# 일지\n- 코테를 밀렸다' });
+  const h = harness(at(21, 0));
+  h.state.owner = 7;
+  const prompts = [];
+  const dreams = [];
+  const llm = {
+    provider: 'claude',
+    full: true,
+    parse: async (text, ctx) => (prompts.push(ctx.prompt), validate({ actions: [], reply: '네' }, ctx)),
+    json: async (key, system, user, schema) => (dreams.push({ key, user }), { note: '- 코테 2문제를 끝냈다', ops: [{ op: 'add', id: '', text: '밤 9시 뒤에는 새 일을 잡지 않으려 한다' }] }),
+  };
+  const memory = createMemory({ files, now: h.now });
+  const bot = createBot({ store: h.store, sync: { syncNow: async () => {} }, tg: { send: async (c, t) => h.sent.push({ text: t }), answer: async () => {}, clearButtons: async () => {} }, llm, memory, state: h.state, now: h.now, opts: OPTS });
+  const msg = text => bot.handleUpdate({ message: { chat: { id: 7, type: 'private' }, from: { id: 7 }, text } });
+  const tick = async () => {
+    await bot.tick();
+    await bot.idle();
+  };
+  await msg('기억해: 발표 전날은 알림을 줄여 줘');
+  assert.match(h.last(), /🧠 기억했어요 \[m1\]/);
+  assert.match(files.db.get('brain/memory.md').text, /\[m1\] 2026-11-13 \| 발표 전날은 알림을 줄여 줘/);
+  await msg('기억해줘서 고마워');
+  assert.ok(!files.db.get('brain/memory.md').text.includes('고마워'), '쌍점이 없으면 기억으로 넣지 않는다');
+  await msg('오늘 좀 지친다');
+  const p = prompts.at(-1);
+  assert.match(p, /## 나에 대해[\s\S]*반말로 짧게/);
+  assert.match(p, /\[m1\] 발표 전날은 알림을 줄여 줘/);
+  assert.match(p, /## 어제 일지 \(2026-11-12\)\n- 코테를 밀렸다/);
+  assert.ok(!p.includes('감마'), '내가 쓴 글 속의 약 이름도 가린다');
+  assert.ok(p.indexOf('## 나에 대해') < p.indexOf('## 오늘 상태'), '기억이 먼저');
+  await msg('기억');
+  assert.match(h.last(), /기억하는 것 \(1\)\n\[m1\]/);
+  // 같은 날에는 밤 정리를 하지 않는다
+  await tick();
+  assert.equal(dreams.length, 0);
+  // 다음 날 새벽 4시가 지나면 어제 대화로 한 번
+  h.now.set(at(4, 1, 14));
+  await tick();
+  await tick();
+  assert.equal(dreams.length, 1, '하루 한 번');
+  assert.match(dreams[0].user, /# 2026-11-13 하루 정리/);
+  assert.match(dreams[0].user, /\[21:00 나\] 오늘 좀 지친다/);
+  assert.ok(!dreams[0].user.includes('감마'));
+  assert.match(files.db.get('brain/log/2026-11-13.md').text, /코테 2문제를 끝냈다[\s\S]*add m2/);
+  assert.match(files.db.get('brain/memory.md').text, /\[m2\] 2026-11-13 \| 밤 9시 뒤에는/);
+  assert.equal(h.state.dreamed, '2026-11-13');
+  assert.equal(h.state.dayLog['2026-11-13'], undefined, '정리한 날의 대화는 지운다');
+  assert.ok(!h.sent.some(s => /정리/.test(s.text)), '밤 정리는 메시지를 보내지 않는다');
+  await msg('잊어 m2');
+  assert.match(h.last(), /지웠어요: 밤 9시 뒤에는/);
+});
+
+test('기억: 두뇌 모드가 아니면 쓰지 않고, 내 말이 없던 날은 AI를 부르지 않고, 비서가 꺼져 있던 날도 나중에 정리한다', async () => {
+  const h = harness(at(21, 0));
+  h.state.owner = 7;
+  await h.msg('기억해: 아무거나');
+  assert.match(h.last(), /두뇌 모드/);
+  let asked = 0;
+  const llm = { provider: 'claude', full: true, parse: async (t, ctx) => validate({ actions: [], reply: '' }, ctx), json: async () => (asked++, { note: '- 한 줄', ops: [] }) };
+  const h2 = harness(at(4, 1, 14));
+  h2.state.owner = 7;
+  h2.state.dayLog = { '2026-11-13': [{ t: at(9, 0), who: 'bot', text: '알림만 있던 날' }] };
+  const files = memFiles();
+  const bot = createBot({ store: h2.store, sync: { syncNow: async () => {} }, tg: { send: async () => {}, answer: async () => {}, clearButtons: async () => {} }, llm, memory: createMemory({ files }), state: h2.state, now: h2.now, opts: OPTS });
+  await bot.tick();
+  await bot.idle();
+  assert.equal(asked, 0);
+  assert.equal(h2.state.dayLog['2026-11-13'], undefined);
+  // 12일에 말하고 13일 내내 꺼져 있다가 14일에 켜진 경우
+  h2.state.dayLog = { '2026-11-12': [{ t: at(21, 0, 12), who: 'me', text: '오늘 힘들었다' }] };
+  await bot.tick();
+  await bot.idle();
+  assert.equal(asked, 1);
+  assert.ok(files.db.has('brain/log/2026-11-12.md'));
+  assert.equal(h2.state.dayLog['2026-11-12'], undefined);
+});
+
+// ---------------- 조용한 점검 ----------------
+import * as Q from '../lib/quiet.mjs';
+
+
+test('조용한 점검: 사흘 연속 반응이 없던 종류만 3일 쉬고, 약(루틴의 약 단계 포함)·마감은 줄이지 않는다', () => {
+  const q = {};
+  const d = n => `2026-11-${n}`;
+  const ping = (kind, extra = {}) => ({ kind, key: kind, buttons: [[{}]], ...extra });
+  Q.review(q, d(13), at(7, 0));
+  for (const day of [13, 14]) Q.onSent(q, ping('routine'), d(day), at(7, 20, day));
+  assert.deepEqual(Q.review(q, d(15), at(10, 0, 15)).notice, [], '이틀로는 쉬지 않는다');
+  Q.onSent(q, ping('routine'), d(15), at(10, 20, 15));
+  assert.deepEqual(Q.review(q, d(16), at(4, 1, 16)).notice, [], '쉰다는 알림은 밤에 보내지 않는다');
+  assert.equal(Q.allow(q, ping('routine', { key: 'rt:shower' }), at(8, 0, 16)), false);
+  assert.deepEqual(Q.review(q, d(16), at(9, 30, 16)).notice, ['routine'], '낮에 한 번');
+  Q.noticeSent(q);
+  assert.deepEqual(Q.review(q, d(16), at(9, 31, 16)).notice, []);
+  assert.equal(Q.allow(q, { kind: 'routine', key: 'rt:med', await: { kind: 'dose', item: 'med_am' } }, at(8, 0, 16)), true, '루틴의 약 단계는 줄이지 않는다');
+  assert.equal(Q.allow(q, ping('dose'), at(14, 0, 16)), true);
+  assert.equal(Q.allow(q, ping('due'), at(14, 0, 16)), true);
+  assert.equal(q.quiet, true, '사흘 내내 반응이 없었으니 조용한 모드도 켜진다');
+  q.quiet = false; // 아래는 종류별 쉬기만 본다
+  assert.equal(Q.allow(q, ping('routine'), at(4, 2, 19)), true, '3일 뒤 돌아온다');
+  Q.unmute(q, 'routine');
+  assert.equal(Q.allow(q, ping('routine'), at(8, 0, 16)), true);
+  // 늦게 답해도, 폰 앱에서 기록해도 반응으로 친다 (그날 그 알림이 온 뒤면)
+  const q2 = {};
+  Q.review(q2, d(13), at(7, 0));
+  for (const day of [13, 14, 15, 16]) {
+    Q.onSent(q2, ping('daily'), d(day), at(18, 30, day));
+    Q.onSeen(q2, at(19, 45, day), at(19, 45, day));
+    Q.review(q2, d(day + 1), at(9, 30, day + 1));
+    assert.equal(Q.allow(q2, ping('daily'), at(9, 30, day + 1)), true);
+  }
+  // 답을 바라지 않는 알림과 주간 리뷰는 세지 않는다
+  const q3 = {};
+  for (const day of [13, 14, 15, 16]) {
+    Q.onSent(q3, { kind: 'hint', key: 'hint:x', buttons: [] }, d(day), at(21, 0, day));
+    Q.onSent(q3, ping('report'), d(day), at(20, 0, day));
+    Q.review(q3, d(day + 1), at(9, 30, day + 1));
+  }
+  assert.deepEqual(Object.keys(q3.mute), []);
+});
+
+test('조용한 점검: 36시간 조용하면 한 번만 묻고 약·마감·일정만 남긴다. "오늘은 쉬기"도 약은 보내고, 반응하면 돌아온다', async () => {
+  const h = harness(at(10, 0));
+  h.state.owner = 7;
+  await h.msg('오늘');
+  h.store.setWake('2026-11-15', at(7, 0, 15));
+  for (const [hh, mm] of [[18, 31], [21, 2], [23, 1]]) {
+    h.now.set(at(hh, mm));
+    await h.bot.tick();
+  }
+  h.now.set(at(9, 1, 14));
+  await h.bot.tick();
+  assert.ok(!h.sent.some(s => /한동안 조용했네요/.test(s.text)), '하루로는 묻지 않는다');
+  h.now.set(at(9, 1, 15));
+  await h.bot.tick();
+  const re = h.sent.filter(s => /한동안 조용했네요/.test(s.text));
+  assert.equal(re.length, 1);
+  assert.deepEqual(re[0].buttons[0].map(b => b.callback_data), ['one', 'rest']);
+  h.now.set(at(14, 1, 15));
+  await h.bot.tick();
+  assert.ok(h.sent.some(s => /💊 오후 약/.test(s.text)), '약 알림은 온다');
+  const night = () => h.sent.filter(s => /밤 9시 규칙/.test(s.text)).length;
+  const before = night();
+  h.now.set(at(21, 2, 15));
+  await h.bot.tick();
+  assert.equal(night(), before, '나머지 알림은 쉰다');
+  assert.equal(h.sent.filter(s => /한동안 조용했네요/.test(s.text)).length, 1, '다시 묻지 않는다');
+  await h.tap('rest');
+  assert.match(h.last(), /약·마감·일정 알림만/);
+  h.now.set(at(21, 3, 15));
+  await h.bot.tick();
+  assert.equal(night(), before, '"오늘은 쉬기" 뒤에도 쉰다');
+  h.store.setTop3('2026-11-15', 't1', { text: '보고서', due: at(21, 20, 15) });
+  h.now.set(at(21, 4, 15));
+  await h.bot.tick();
+  assert.ok(h.sent.some(s => /분 남았어요: 보고서/.test(s.text)), '쉬는 날에도 내가 정한 마감은 알려 준다');
+  await h.msg('/resume');
+  h.now.set(at(21, 5, 15));
+  await h.bot.tick();
+  assert.equal(night(), before + 1, '/resume 하면 돌아온다');
+});
+
+test('조용한 점검: "하나만 정하기"의 답을 밀려 있던 알림이 가로채지 않는다', async () => {
+  const h = harness(at(19, 0));
+  h.state.owner = 7;
+  h.state.q = { seen: at(19, 0) - 40 * C.HOUR, quiet: true, unanswered: 5 };
+  await h.bot.tick();
+  assert.ok(!h.sent.some(s => /불편 한 줄/.test(s.text)), '조용한 동안 매일 한 줄은 쉰다');
+  await h.tap('one');
+  assert.equal(h.state.awaiting.kind, 'top3');
+  h.now.set(at(19, 1));
+  await h.bot.tick();
+  assert.equal(h.state.awaiting.kind, 'top3', '답을 기다리는 동안 다른 알림이 끼어들지 않는다');
+  await h.msg('코테 1문제 21시');
+  assert.equal(C.top3Of(h.store.day(KEY))[0].text, '코테 1문제');
+  h.now.set(at(19, 2));
+  await h.bot.tick();
+  assert.ok(h.sent.some(s => /불편 한 줄/.test(s.text)), '답한 뒤에 밀린 알림이 온다');
+});
+
+test('AI 연결 검토에서 나온 것: 약 이름 뒤 시각은 남기고, 이상한 시각·없는 대상은 버리고 규칙으로 다시 푼다', async () => {
+  const masks = B.medMasks([{ id: 'med_pm', name: '오후 2시 감마', block: 'day', words: ['감마', '감마정'] }]);
+  assert.equal(B.redact('감마 3시 10분에 먹음', masks), '[낮 약] 3시 10분에 먹음');
+  assert.equal(B.redact('감마 15:10에 먹음', masks), '[낮 약] 15:10에 먹음');
+  assert.equal(B.redact('감마 30분 전에 먹었어', masks), '[낮 약] 30분 전에 먹었어');
+  assert.equal(B.redact('감마정 10mg 먹음', masks), '[낮 약] 먹음');
+  const ctx = { now: at(15, 18), key: KEY, rollover: 4, prompt: 'x', items: [], top3: [], masks: [{ code: 'M2', id: 'med_pm' }] };
+  const med = time => validate({ actions: [act('med', { item: 'M2', time })], reply: '' }, ctx);
+  assert.equal(med('15:10').actions[0].at, at(15, 10));
+  assert.equal(med('15:10:00').actions[0].at, at(15, 10));
+  for (const t of ['24:00', '오후 3:10', '15시 10분', '7:5', '03:10']) assert.deepEqual([med(t).actions.length, med(t).dropped], [0, 1], `${t}는 버린다`);
+  assert.equal(med('').actions[0].at, 0, '시각이 없으면 지금');
+  // 새벽 마감은 24시간 표기 그대로
+  const late = validate({ actions: [act('top3_set', { text: '과제', time: '02:00', day: 'today' })], reply: '' }, { ...ctx, now: at(22, 0) });
+  assert.equal(late.actions[0].due, C.tsFor(KEY, '02:00', 4));
+  // 기본 모드(상태를 못 본 AI)의 기상 시각은 직접 남긴 기상을 바로 바꾸지 않는다
+  assert.equal(validate({ actions: [act('wake', { time: '06:30' })], reply: '' }, { ...ctx, prompt: undefined }).actions[0].fix, undefined);
+  // 두뇌 모드: AI가 오전/오후를 틀려 버려지면 규칙이 받는다
+  const h = brainHarness(at(15, 18), () => ({ actions: [act('med', { item: 'M2', time: '03:10' })], reply: '' }));
+  await h.msg('3시 10분에 감마 먹었어');
+  assert.equal(C.itemState(h.store.day(KEY), { id: 'med_pm', type: 'check' }).last, at(15, 10));
+  // AI가 고른 되돌리기는 10분 안의 기록에만
+  const h2 = brainHarness(at(9, 40), text => (/아니야/.test(text) ? { actions: [act('undo')], reply: '' } : { actions: [act('med', { item: 'M1' })], reply: '' }));
+  await h2.msg('약 먹었어');
+  h2.now.set(at(14, 1));
+  await h2.msg('그거 아니야, 이력서가 먼저야');
+  assert.equal(C.itemState(h2.store.day(KEY), { id: 'med_am', type: 'check' }).count, 1, '몇 시간 전 약 기록은 지우지 않는다');
+  assert.match(h2.last(), /되돌릴 최근 기록이 없어요/);
+});
+
+// ---------------- 두뇌 1단계 독립 검토(개인정보·흐름)에서 나온 것 ----------------
+test('가리기: 흔한 낱말은 안 깨고, 영문·괄호 용량·숫자 이름·예전 이름도 가리고, 기록에는 내 말로 되돌린다', () => {
+  const masks = B.medMasks([
+    { id: 'med_am', name: '아침 약', block: 'am', words: ['알파정', 'Alphax', '18'] },
+    { id: 'med_pm', name: '오후 2시 감마', block: 'day', words: ['감마', '감마정', '5'] },
+    { id: 'med_night', name: '자기 전 약', block: 'night', words: [] },
+  ]);
+  assert.equal(B.redact('아침 약속 늦을 듯, 자기 전 약간 출출해', masks), '아침 약속 늦을 듯, 자기 전 약간 출출해', '흔한 말뿐인 항목 이름은 가리지 않는다');
+  assert.equal(B.redact('ALPHAX 먹음', masks), '[아침 약] 먹음', '영문은 대소문자 무시');
+  assert.equal(B.redact('알파정(18) 먹었어', masks), '[아침 약] 먹었어');
+  assert.equal(B.redact('기상 10:18, 5분 뒤에 산책, 21:05 마감', masks), '기상 10:18, 5분 뒤에 산책, 21:05 마감', '숫자뿐인 이름 조각은 가릴 말이 아니다');
+  assert.equal(B.redact('약 + 물 (알파정 18 + 감마정 5)', masks), '약 + 물 ([아침 약] + [낮 약])');
+  const past = B.withPast(masks, { 옛이름정: '낮 약', 감마: '낮 약' });
+  assert.equal(B.redact('옛이름정 먹으면 잠이 안 옴', past), '[낮 약] 먹으면 잠이 안 옴', '이름을 바꾸거나 없앤 약도 계속 가린다');
+  assert.equal(B.unmask('[낮 약] 처방전 받기', masks, '감마 처방전 받기 21시'), '감마 처방전 받기');
+  assert.equal(B.unmask('[아침 약] 용량 고민', masks, '그 약 용량 고민'), '아침 약 용량 고민', '내가 쓴 말을 모르면 이름표 글자만');
+  const long = `${'가'.repeat(497)}감마정 먹음`;
+  assert.ok(!B.buildPrompt({ stateText: 's', history: [], message: long, now: at(9, 0), masks }).includes('감마'), '가린 뒤에 자른다');
+  for (const s of ['요즘 그냥 살고 싶지 않아', '그만 살고 싶다', '없어지고 싶어', '죽어버릴까']) assert.equal(B.isCrisis(s), true, s);
+  assert.equal(B.isCrisis('피곤해 죽겠다'), false);
+});
+
+test('두뇌 모드: 기록에는 이름표가 아니라 내 말이 남고, 대화 기록과 캘린더 장소는 가려서 남는다', async () => {
+  const h = brainHarness(at(15, 0), text => (/처방전/.test(text) ? { actions: [act('top3_set', { text: '[낮 약] 처방전 받기', time: '21:00', day: 'today' })], reply: '' } : { actions: [], reply: '' }));
+  await h.msg('감마 처방전 받기 21시');
+  assert.equal(C.top3Of(h.store.day(KEY))[0].text, '감마 처방전 받기');
+  assert.ok(!JSON.stringify(h.state.history).includes('감마'), '대화 기록은 가려서 남긴다');
+  const hist = {};
+  const bot = createBot({ store: h.store, sync: { syncNow: async () => {} }, tg: { send: async () => {}, answer: async () => {}, clearButtons: async () => {} }, state: hist, now: h.now, opts: OPTS });
+  hist.owner = 7;
+  void bot;
+  // 기본 모드(Gemini)도 가려서 보낸다
+  let seen = null;
+  const g = harness(at(15, 0));
+  g.state.owner = 7;
+  g.store.setTop3(KEY, 't1', { text: '감마 처방전 받기', due: at(18, 0) });
+  const llm = { provider: 'gemini', full: false, parse: async (text, ctx) => ((seen = { text, ctx }), validate({ actions: [act('park', { text: '[낮 약] 용량 고민' })], reply: '' }, ctx)) };
+  const gb = createBot({ store: g.store, sync: { syncNow: async () => {} }, tg: { send: async (c, t) => g.sent.push({ text: t }), answer: async () => {}, clearButtons: async () => {} }, llm, state: g.state, now: g.now, opts: OPTS });
+  await gb.handleUpdate({ message: { chat: { id: 7, type: 'private' }, from: { id: 7 }, text: '감마 용량 올릴지 고민이네' } });
+  assert.ok(!JSON.stringify(seen).includes('감마'), 'Gemini에게 가는 글에도 약 이름이 없다');
+  assert.equal(C.live(g.store.day(KEY)).find(e => e.item === 'park').note, '감마 용량 고민', '기록에는 내 말로');
+});
+
+test('되돌리기: 버튼·타이머로 바뀐 뒤엔 옛 기록을 되돌리지 않고, 걸어 둔 질문과 루틴 끄기도 같이 되돌린다', async () => {
+  const h = harness(at(15, 18));
+  h.state.owner = 7;
+  await h.msg('3시 10분에 감마 먹었어');
+  await h.tap('log:apply'); // 버튼으로 다른 기록
+  await h.msg('되돌려');
+  assert.match(h.last(), /되돌릴 기록이 없어요/);
+  assert.equal(C.itemState(h.store.day(KEY), { id: 'med_pm', type: 'check' }).count, 1, '버튼 뒤엔 앞의 약 기록을 되돌리지 않는다');
+  // 끝 → 결과물 질문 → 되돌려 → 그 질문도 사라진다
+  const h2 = harness(at(17, 0));
+  h2.state.owner = 7;
+  await h2.msg('코테 2문제 21시');
+  await h2.msg('끝');
+  assert.equal(h2.state.awaiting.kind, 'out');
+  await h2.msg('되돌려');
+  assert.equal(h2.state.awaiting, null);
+  assert.ok(!C.top3Of(h2.store.day(KEY))[0].done);
+  // AI가 [되돌리기, 새 기록]을 같이 내면 새 기록을 다시 되돌릴 수 있다
+  const h3 = brainHarness(at(15, 19), (text, ctx, n) => (n === 1 ? { actions: [act('med', { item: 'M1', time: '15:00' })], reply: '' } : { actions: [act('undo'), act('med', { item: 'M2', time: '15:00' })], reply: '' }));
+  await h3.msg('3시에 아침 약 먹었어');
+  await h3.msg('방금 거 지우고 낮 약으로 해 줘');
+  const cnt = id => C.itemState(h3.store.day(KEY), { id, type: 'check' }).count;
+  assert.deepEqual([cnt('med_am'), cnt('med_pm')], [0, 1]);
+  await h3.msg('되돌려');
+  assert.deepEqual([cnt('med_am'), cnt('med_pm')], [0, 0]);
+  // AI가 일부러 아무것도 안 하면 규칙이 대신 기록하지 않는다
+  const h4 = brainHarness(at(9, 0), () => ({ actions: [act('none')], reply: '' }));
+  await h4.msg('아기 6시에 깼어');
+  assert.equal(C.wakeOf(h4.store.day(KEY)), 0);
+  // "어 아니…"는 고치라는 답이 아니다
+  const ask = { now: at(9, 0), key: KEY, rollover: 4, meds: MEDS, awaiting: { kind: 'wake_confirm', at: at(6, 0) } };
+  assert.ok(!parseMessage('어 아니 아기가 깬 거라고', ask)?.actions?.some(a => a.type === 'wake'));
+  assert.equal(parseMessage('응 고쳐 줘', ask).actions[0].at, at(6, 0));
+  // 돌던 타이머 위에 새 타이머를 걸면 앞의 것을 먼저 남긴다
+  const h5 = harness(at(10, 0));
+  h5.state.owner = 7;
+  await h5.msg('/focus 50');
+  h5.now.set(at(10, 30));
+  await h5.msg('/focus 25');
+  assert.match(h5.last(), /앞 집중 30분은 남겼어요/);
+  assert.equal(C.live(h5.store.day(KEY)).filter(e => e.item === 'focus')[0].min, 30);
 });

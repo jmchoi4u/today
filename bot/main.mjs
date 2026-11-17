@@ -12,6 +12,8 @@ import { createTelegram } from './lib/telegram.mjs';
 import { createLLM } from './lib/llm.mjs';
 import { createBot, newPairCode } from './lib/bot.mjs';
 import { createBrief } from './lib/brief.mjs';
+import { createMemory } from './lib/memory.mjs';
+import { createRepoFiles } from './lib/repofile.mjs';
 
 // 업데이트 전에 "이 코드가 불러와지는지"만 확인할 때: node main.mjs --selftest
 if (process.argv.includes('--selftest')) {
@@ -38,7 +40,7 @@ function log(...parts) {
 }
 
 // ----- 설정 -----
-const KEYS = ['TELEGRAM_BOT_TOKEN', 'GITHUB_REPO', 'GITHUB_TOKEN', 'LLM_PROVIDER', 'GEMINI_API_KEY', 'GEMINI_MODEL', 'ANTHROPIC_API_KEY', 'CLAUDE_MODEL', 'WAKE_WEEKDAY', 'WAKE_WEEKEND', 'QUIET_FROM', 'QUIET_TO', 'APP_URL', 'AUTO_UPDATE', 'CALENDAR_ICS_URL'];
+const KEYS = ['TELEGRAM_BOT_TOKEN', 'GITHUB_REPO', 'GITHUB_TOKEN', 'LLM_PROVIDER', 'GEMINI_API_KEY', 'GEMINI_MODEL', 'ANTHROPIC_API_KEY', 'CLAUDE_MODEL', 'LLM_FULL_CONTEXT', 'WAKE_WEEKDAY', 'WAKE_WEEKEND', 'QUIET_FROM', 'QUIET_TO', 'APP_URL', 'AUTO_UPDATE', 'CALENDAR_ICS_URL'];
 const env = { ...loadEnv(path.join(here, '.env')) };
 for (const k of KEYS) if (process.env[k]) env[k] = process.env[k]; // 환경 변수가 있으면 그쪽이 먼저
 const need = ['TELEGRAM_BOT_TOKEN', 'GITHUB_TOKEN', 'GITHUB_REPO'].filter(k => !env[k]);
@@ -137,12 +139,19 @@ const sync = createSync({
 });
 
 const tg = createTelegram({ token: env.TELEGRAM_BOT_TOKEN });
+// 두뇌 모드(오늘 상태·최근 대화까지 보내고 모든 말을 AI가 먼저 읽기)는 학습에 쓰지 않는 유료 API에서만 기본으로 켠다.
+// Gemini도 유료 등급이면 LLM_FULL_CONTEXT=1로 켤 수 있다
+const provider = (env.LLM_PROVIDER || 'gemini').toLowerCase();
+const fc = String(env.LLM_FULL_CONTEXT || '').trim();
+const fullCtx = /^(1|on|true|yes)$/i.test(fc) ? true : /^(0|off|false|no)$/i.test(fc) ? false : provider === 'claude';
 const llm = createLLM({
-  provider: env.LLM_PROVIDER || 'gemini',
+  provider,
   geminiKey: env.GEMINI_API_KEY,
   geminiModel: env.GEMINI_MODEL || 'gemini-flash-latest',
   claudeKey: env.ANTHROPIC_API_KEY,
-  claudeModel: env.CLAUDE_MODEL || 'claude-opus-5-5',
+  // 사용자가 고른 모델 (월 몇천 원). Opus 5.5로 바꾸면 같은 사용량에 약 40배
+  claudeModel: env.CLAUDE_MODEL || 'claude-haiku-5-5',
+  full: fullCtx,
 });
 // 감시 프로그램(supervisor.mjs) 아래에서 돌 때만 /update를 받는다
 const supervised = process.env.TODAY_SUPERVISED === '1';
@@ -158,7 +167,9 @@ if (supervised) opts.requestUpdate = () => fs.writeFileSync(path.join(dataDir, '
 // 아침 브리핑과 캘린더 (캘린더 주소는 비밀이라 기록에 쓰지 않는다)
 const calUrl = /^https:\/\//.test(env.CALENDAR_ICS_URL || '') ? env.CALENDAR_ICS_URL.trim() : '';
 const brief = createBrief({ store, calendarUrl: calUrl, log });
-const bot = createBot({ store, sync, tg, llm, brief, state, save, log, opts });
+// 기억 3층(brain/*.md)은 두뇌 모드에서만 쓴다. 같은 비공개 저장소, 같은 토큰
+const memory = llm?.full ? createMemory({ files: createRepoFiles({ repo, token: env.GITHUB_TOKEN }), log }) : null;
+const bot = createBot({ store, sync, tg, llm, brief, memory, state, save, log, opts });
 
 let running = true;
 async function shutdown() {
@@ -200,7 +211,7 @@ async function check() {
   else {
     try {
       await llm.parse('오늘 상태 알려 줘', { key: 'check', nowText: '점검', items: [], top3: [] });
-      console.log(`[OK] AI (${llm.provider})`);
+      console.log(`[OK] AI (${llm.provider} · ${llm.model}${llm.full ? ' · 두뇌 모드' : ''})`);
     } catch (e) {
       // AI는 없어도 비서가 돈다 (규칙으로 알아듣는 말은 그대로 처리). 설치를 막지 않고 알려만 준다
       console.log(`[!] AI (${llm.provider}): ${e.message}. 지금은 AI 없이 켜고, 나중에 check.cmd로 다시 확인해요.`);

@@ -112,7 +112,8 @@ export function createStore({ storage, now = Date.now } = {}) {
     return mutDay(key, (d, m) => {
       const ev = clean({ id: uid(m), item, t: t ?? m, m, ...extra });
       d.events.push(ev);
-      if (autoWake && !d.wake?.t) d.wake = { t: ev.t, auto: true, m };
+      // 기상을 첫 기록으로 짐작하는 중이면, 더 이른 시각의 기록이 들어올 때 기상도 따라간다 (updateEvent와 같은 규칙)
+      if (autoWake && (!d.wake?.t || (d.wake.auto && ev.t < d.wake.t))) d.wake = { t: ev.t, auto: true, m };
       return ev;
     });
   }

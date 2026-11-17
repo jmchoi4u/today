@@ -1,5 +1,5 @@
 // 아침 브리핑: 날씨·미세먼지·옷차림, 캘린더 일정, 식단, 소식 세 줄, 지금 단계.
-// 밖으로 나가는 것: 대략의 위치(소수 첫째 자리)가 Open-Meteo로, 소식 키워드가 Google 뉴스로 간다. 기록과 캘린더 내용은 어디에도 보내지 않는다.
+// 밖으로 나가는 것: 대략의 위치(소수 첫째 자리)가 Open-Meteo로, 소식 키워드가 Google 뉴스로 간다. 브리핑을 만들 때 기록과 캘린더 내용은 어디에도 보내지 않는다 (두뇌 모드에서는 일정 제목이 오늘 상태에 들어가 AI에게 간다. 장소는 빼고).
 // 무엇을 보여 줄지는 비공개 저장소 game.json의 brief { loc, news, meals }와 .env의 CALENDAR_ICS_URL로 정한다.
 import * as C from '../../js/core.js';
 import * as GM from '../../js/game.js';

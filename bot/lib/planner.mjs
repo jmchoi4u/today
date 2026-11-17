@@ -11,7 +11,7 @@ export const btn = (text, data) => ({ text, callback_data: String(data).slice(0,
 const PRI = { focus: 0, due: 1, cal: 1.5, dose: 2, go: 3, routine: 4, wake: 5, plan: 6, peak: 7, daily: 8, hint: 9, report: 10 };
 
 // opts: { wakeWeekday, wakeWeekend, quietFrom, quietTo, appUrl }
-// state: { focus, routineOff }
+// state: { focus, routineOff, sent: 오늘 보낸 알림 {key: 보낸 시각} }
 // calendar: { upcoming: 오늘(새벽 기준) 시간이 있는 일정, tomorrow: 내일 일정 } 또는 null
 export function planPings({ now, cfg, day, prevDay = null, recentDays = [], game = null, profiles = [], state = {}, opts = {}, calendar = null }) {
   const R = cfg?.prefs?.rollover ?? 4;
@@ -104,8 +104,10 @@ export function planPings({ now, cfg, day, prevDay = null, recentDays = [], game
     const ds = C.doseState(it, day, { now, rollover: R });
     if (!['due', 'overdue'].includes(ds.kind) || !ds.due || now < ds.due || now >= ds.due + 3 * HOUR) continue;
     const b = [[btn('💊 먹었어요', `log:${it.id}`), btn('오늘은 건너뛰기', `skip:${it.id}`)]];
-    push('dose', `dose:${it.id}`, { text: `💊 ${it.name}${it.cue ? ` · ${it.cue}` : ''}`, buttons: b });
-    if (now >= ds.due + HOUR) push('dose', `dose2:${it.id}`, { text: `💊 ${it.name} 아직이에요. 먹었으면 눌러 주세요. 늦게 먹으면 잠이 늦어질 수 있어요.`, buttons: b });
+    // 답장으로 "3시 10분에 먹었어"라고 해도 이 약으로 알아듣게 기다린다
+    const aw = { kind: 'dose', item: it.id };
+    push('dose', `dose:${it.id}`, { text: `💊 ${it.name}${it.cue ? ` · ${it.cue}` : ''}`, buttons: b, await: aw });
+    if (now >= ds.due + HOUR) push('dose', `dose2:${it.id}`, { text: `💊 ${it.name} 아직이에요. 먹었으면 눌러 주세요 (먹은 시각을 답장해도 돼요). 늦게 먹으면 잠이 늦어질 수 있어요.`, buttons: b, await: aw });
   }
 
   // 5) 예정 시각이 있는 습관 (예: 소등): 30분 전. 자기 전 약이 남았으면 같이
@@ -119,17 +121,20 @@ export function planPings({ now, cfg, day, prevDay = null, recentDays = [], game
     push('plan', `plan:${it.id}`, { text: `${it.icon || '⏰'} ${it.name} ${fmt(due)}${now < due ? ` · ${Math.ceil((due - now) / MIN)}분 남았어요` : ''}`, buttons: rows });
   }
 
-  // 6) 약 효과가 가장 높은 구간이 시작될 때
-  if (profiles?.length && !fx) {
+  // 6) 약 효과가 가장 높은 구간이 시작될 때. 한 번에 하나, 3시간 안에 이미 알렸으면 또 알리지 않는다
+  //    (아침 약과 오후 약의 구간이 겹치면 1시간 사이에 두 번 오던 것을 막는다)
+  const lastPeak = Math.max(0, ...Object.entries(state.sent || {}).filter(([k]) => k.startsWith('peak:')).map(([, t]) => +t || 0));
+  if (profiles?.length && !fx && now - lastPeak >= 3 * HOUR) {
     const doses = PK.dosesOf([prevDay, day], items, profiles).filter(d => d.p.kind === 'curve');
     if (doses.length) {
       const t0 = C.dayStartTs(key, R);
       const sr = PK.series(doses, t0, t0 + 24 * HOUR);
-      for (const G of sr.groups) {
+      peaks: for (const G of sr.groups) {
         const st = PK.groupStatus(G, sr.ts, now);
         for (const [a, b] of st?.peak || []) {
           if (now >= a && now < a + HOUR && b - now >= 20 * MIN) {
             push('peak', `peak:${G.group}:${a}`, { text: `🎯 지금부터 ${fmt(b)}까지 약 효과가 가장 높은 구간이에요. 제일 어려운 거 하나 50분?`, buttons: [[btn('⏱️ 50분 시작', 'fx:50'), btn('25분', 'fx:25')]] });
+            break peaks;
           }
         }
       }
@@ -201,7 +206,7 @@ function stepPing(s, due, { byId, day }) {
     const it = byId(s.item);
     if (!it) return null;
     const label = it.cat === 'med' ? '💊 먹었어요' : it.type === 'count' ? '+1 했어요' : '✅ 했어요';
-    return { text: head, buttons: [[btn(label, `log:${it.id}`)], [btn('오늘 루틴은 그만', 'rtoff')]] };
+    return { text: head, buttons: [[btn(label, `log:${it.id}`)], [btn('오늘 루틴은 그만', 'rtoff')]], await: it.cat === 'med' ? { kind: 'dose', item: it.id } : undefined };
   }
   if (s.check === 'manual') return { text: head, buttons: [[btn('✅ 했어요', `rt:${s.id}`)], [btn('오늘 루틴은 그만', 'rtoff')]] };
   if (s.check === 'top3') {
