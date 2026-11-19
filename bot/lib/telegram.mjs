@@ -38,5 +38,10 @@ export function createTelegram({ token, fetchFn = globalThis.fetch }) {
     send: (chatId, text, buttons, { html = false } = {}) => call('sendMessage', { chat_id: chatId, text: String(text).slice(0, 4000), parse_mode: html ? 'HTML' : undefined, link_preview_options: { is_disabled: true }, reply_markup: keyboard(buttons) }),
     answer: (id, text) => call('answerCallbackQuery', { callback_query_id: id, text: text ? String(text).slice(0, 190) : undefined }),
     clearButtons: (chatId, messageId) => call('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }),
+    // 사람 같은 표시: "입력 중", 메시지에 이모지 반응, 텔레그램에 보이는 봇 이름
+    typing: chatId => call('sendChatAction', { chat_id: chatId, action: 'typing' }),
+    react: (chatId, messageId, emoji) => call('setMessageReaction', { chat_id: chatId, message_id: messageId, reaction: emoji ? [{ type: 'emoji', emoji }] : [] }),
+    getName: () => call('getMyName'),
+    setName: name => call('setMyName', { name: String(name).slice(0, 64) }),
   };
 }

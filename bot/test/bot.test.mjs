@@ -287,17 +287,28 @@ function harness(startTs) {
   const now = clock(startTs);
   const store = makeStore(now);
   const sent = [];
+  const calls = { react: [], typing: 0, setName: [] }; // 반응·입력 중·봇 이름 기록
   const tg = {
     send: async (chat, text, buttons) => sent.push({ chat, text, buttons }),
     answer: async () => {},
     clearButtons: async () => {},
+    ...fakeExtras(calls),
   };
   const sync = { syncNow: async () => {} };
   const state = { pairCode: '123456' };
   const bot = createBot({ store, sync, tg, state, now, opts: OPTS });
-  const msg = (text, chat = 7, from = 7) => bot.handleUpdate({ message: { chat: { id: chat, type: 'private' }, from: { id: from }, text } });
+  let mid = 100;
+  const msg = (text, chat = 7, from = 7) => bot.handleUpdate({ message: { message_id: ++mid, chat: { id: chat, type: 'private' }, from: { id: from }, text } });
   const tap = (data, chat = 7, from = 7) => bot.handleUpdate({ callback_query: { id: 'q', data, from: { id: from }, message: { message_id: 1, chat: { id: chat } } } });
-  return { now, store, sent, state, bot, msg, tap, last: () => sent.at(-1)?.text };
+  return { now, store, sent, state, bot, msg, tap, calls, tg, last: () => sent.at(-1)?.text, lastId: () => mid };
+}
+// 새 텔레그램 기능의 가짜 (반응, 입력 중, 봇 이름)
+function fakeExtras(calls) {
+  return {
+    react: async (chat, id, emoji) => calls.react.push({ chat, id, emoji }),
+    typing: async () => calls.typing++,
+    setName: async name => calls.setName.push(name),
+  };
 }
 
 test('비서: 6자리 코드로 주인을 정하고, 주인이 아니면 무시한다', async () => {
@@ -839,10 +850,12 @@ function brainHarness(startTs, answer) {
       return validate(out, ctx);
     },
   };
-  const bot = createBot({ store: h.store, sync: { syncNow: async () => {} }, tg: { send: async (c, t, b) => h.sent.push({ text: t, buttons: b }), answer: async () => {}, clearButtons: async () => {} }, llm, state: h.state, now: h.now, opts: OPTS });
-  const msg = text => bot.handleUpdate({ message: { chat: { id: 7, type: 'private' }, from: { id: 7 }, text } });
+  const tg = { send: async (c, t, b) => h.sent.push({ text: t, buttons: b }), answer: async () => {}, clearButtons: async () => {}, ...fakeExtras(h.calls) };
+  const bot = createBot({ store: h.store, sync: { syncNow: async () => {} }, tg, llm, state: h.state, now: h.now, opts: OPTS });
+  let mid = 500;
+  const msg = text => bot.handleUpdate({ message: { message_id: ++mid, chat: { id: 7, type: 'private' }, from: { id: 7 }, text } });
   const tap = data => bot.handleUpdate({ callback_query: { id: 'q', data, from: { id: 7 }, message: { message_id: 1, chat: { id: 7 }, reply_markup: { inline_keyboard: [[{ text: '☀️ 일어났어요', callback_data: 'wake' }]] } } } });
-  return { ...h, bot, msg, tap, prompts };
+  return { ...h, bot, msg, tap, prompts, tg, lastId: () => mid };
 }
 const act = (type, f = {}) => ({ type, text: '', time: '', item: '', id: '', min: '', day: '', ...f });
 const NAMES = ['감마', '긴 약', '오후 약', '알파정'];
@@ -1376,4 +1389,207 @@ test('알림: 새 버전·설치 알림은 대화 기록에 남아서 비서가 
   await h.bot.notify('🔄 새 버전으로 다시 켜졌어요 (abc1234)');
   assert.match(h.last(), /새 버전으로 다시 켜졌어요/);
   assert.ok(JSON.stringify(h.state).includes('새 버전으로 다시 켜졌어요'), '최근 대화에 남는다');
+});
+
+// ---------------- 비서다운 모습: 반응, 입력 중, 내일 첫마디, 비서의 한마디, 봇 이름 ----------------
+import { createTelegram } from '../lib/telegram.mjs';
+import { REACTIONS } from '../lib/llm.mjs';
+import { lead, fill, KINDS, LINES } from '../lib/voice.mjs';
+
+const P = { name: '하루', call: '선장님' };
+
+test('텔레그램: 입력 중·반응·봇 이름은 맞는 API로 보낸다', async () => {
+  const calls = [];
+  const fetchFn = async (url, o) => (calls.push({ method: url.split('/').at(-1), body: JSON.parse(o.body) }), { status: 200, json: async () => ({ ok: true, result: url.endsWith('getMyName') ? { name: '하루' } : true }) });
+  const tg = createTelegram({ token: '123:abcdefghijklmnopqrstuvwxyz', fetchFn });
+  await tg.typing(7);
+  await tg.react(7, 42, '💊');
+  await tg.react(7, 42, '');
+  assert.deepEqual(await tg.getName(), { name: '하루' });
+  await tg.setName('하'.repeat(80));
+  assert.deepEqual(calls.map(c => c.method), ['sendChatAction', 'setMessageReaction', 'setMessageReaction', 'getMyName', 'setMyName']);
+  assert.deepEqual(calls[0].body, { chat_id: 7, action: 'typing' });
+  assert.deepEqual(calls[1].body, { chat_id: 7, message_id: 42, reaction: [{ type: 'emoji', emoji: '💊' }] });
+  assert.deepEqual(calls[2].body.reaction, [], '빈 이모지는 반응 지우기');
+  assert.equal(calls[4].body.name.length, 64, '이름은 64자까지');
+});
+
+test('AI 답 검사: react는 정해진 이모지만 받는다', () => {
+  const ctx = { items: [], top3: [] };
+  assert.equal(validate({ actions: [], reply: '', react: '🤗' }, ctx).react, '🤗');
+  assert.equal(validate({ actions: [], reply: '', react: ' 🔥 ' }, ctx).react, '🔥');
+  assert.equal(validate({ actions: [], reply: '', react: '🦄' }, ctx).react, '', '모르는 이모지는 버린다');
+  assert.equal(validate({ actions: [], reply: '' }, ctx).react, '', '없으면 빈 글');
+  assert.equal(validate({ actions: [], reply: '', react: 3 }, ctx).react, '');
+  assert.ok(SCHEMA.required.includes('react') && SCHEMA.properties.react.type === 'string');
+  assert.ok(REACTIONS.includes('💊') && REACTIONS.includes('🔥'));
+  assert.match(systemPrompt(true, P), /react: .*🤗/);
+});
+
+test('비서 성격: 성격과 버릇(bio)을 넣고, 이름이 있으면 그 이름으로 말하되 AI인지 물으면 솔직하게', () => {
+  const p = personaText({ ...P, bio: '커피를 좋아하고\n가끔 바다 이야기를 한다' });
+  assert.match(p, /성격과 버릇: 커피를 좋아하고 가끔 바다 이야기를 한다/);
+  assert.match(p, /너는 하루로서 말한다/);
+  assert.match(p, /AI인지 물으면 솔직하게 AI 비서라고 답한다/);
+  assert.equal(p.split('\n')[1].startsWith('너는 하루로서'), true, '이름 줄 바로 다음');
+  const plain = personaText({ call: '선장님' });
+  assert.ok(!/로서 말한다|성격과 버릇/.test(plain), '이름이 없으면 예전 모양');
+  assert.equal(plain.split('\n').length, 3);
+});
+
+test('비서의 한마디: 설정이 없으면 없고, 같은 seed는 같은 줄, 호칭이 없어도 문장이 깨지지 않는다', () => {
+  assert.equal(lead('wake', null, 'a'), '');
+  assert.equal(lead('wake', { call: '선장님' }, 'a'), '', '이름이 없으면 없다');
+  assert.equal(lead('nope', P, 'a'), '');
+  for (const k of KINDS) {
+    assert.equal(lead(k, P, 'x1'), lead(k, P, 'x1'));
+    const seen = new Set(Array.from({ length: 30 }, (_, i) => lead(k, P, `2026-11-13:${i}`)));
+    assert.ok(seen.size > 1, `${k}: 여러 줄이 나온다`);
+    for (const l of seen) assert.ok(!l.includes('{call}'));
+    assert.ok([...seen].some(l => l.includes('선장님')), `${k}: 호칭이 들어간 줄이 있다`);
+    for (const line of LINES[k]) {
+      const f = fill(line, '');
+      assert.ok(!f.includes('{call}') && !/^[,\s]/.test(f) && !/[,\s]$/.test(f) && !/ [?.!,]|,[,.?]|\.\./.test(f), `${k}: "${line}" → "${f}"`);
+      assert.ok(!/\{call\}[가-힣]/.test(line), '호칭 뒤에 조사를 붙이지 않는다');
+    }
+  }
+  assert.equal(fill('잘 주무셨어요, {call}?', ''), '잘 주무셨어요?');
+  assert.equal(fill('{call}, 일어날 시간이에요', ''), '일어날 시간이에요');
+  assert.equal(fill('수고하셨어요, {call}. 5분만 쉬어요', ''), '수고하셨어요. 5분만 쉬어요');
+  assert.equal(lead('done', { name: '하루', call: '' }, 'x').includes('{call}'), false);
+});
+
+test('반응: 약을 기록한 메시지엔 💊, 명령·버튼에는 달지 않는다', async () => {
+  const h = harness(at(7, 10));
+  h.state.owner = 7;
+  await h.msg('약 먹었어');
+  assert.deepEqual(h.calls.react, [{ chat: 7, id: h.lastId(), emoji: '💊' }]);
+  await h.msg('/today');
+  await h.msg('오늘');
+  await h.tap('wake');
+  assert.equal(h.calls.react.length, 1, '명령·상태 보기·버튼에는 반응이 없다');
+  await h.msg('코테 2문제 21시');
+  assert.equal(h.calls.react.at(-1).emoji, '✍');
+  await h.msg('뭐라는지 모를 말');
+  assert.equal(h.calls.react.length, 2, '못 알아들은 말에는 없다');
+  assert.equal(h.calls.typing, 0, 'AI를 부르지 않으면 입력 중도 없다');
+});
+
+test('반응: 두뇌 모드는 AI가 고른 반응을 달고 입력 중을 띄운다. 기록이 있으면 기록에 맞는 반응이 먼저', async () => {
+  const h = brainHarness(at(15, 0), text => (/끝/.test(text) ? { actions: [act('top3_done', { id: 't1' })], reply: '멋져요', react: '🤗' } : { actions: [], reply: '오늘 날씨 좋네요', react: '🤗' }));
+  h.store.setTop3(KEY, 't1', { text: '코테', due: at(21, 0) });
+  await h.msg('날씨 좋다');
+  assert.equal(h.calls.typing, 1);
+  assert.deepEqual(h.calls.react, [{ chat: 7, id: h.lastId(), emoji: '🤗' }]);
+  await h.msg('코테 다 끝냈다');
+  assert.equal(h.calls.react.at(-1).emoji, '🔥');
+  assert.equal(h.calls.typing, 2);
+  // 가짜 텔레그램에 새 기능이 없거나 실패해도 답은 간다
+  const h2 = brainHarness(at(15, 0), () => ({ actions: [], reply: '네', react: '👍' }));
+  delete h2.tg.typing;
+  h2.tg.react = () => {
+    throw new Error('반응 실패');
+  };
+  await h2.msg('안녕');
+  assert.equal(h2.last(), '네');
+  h2.tg.react = async () => {
+    throw new Error('반응 실패');
+  };
+  await h2.msg('안녕');
+  assert.equal(h2.last(), '네');
+});
+
+test('내일 첫마디: 오늘 것은 일어났을 때 한 번만, 지난 날 것은 보내지 않고 지운다', async () => {
+  const h = harness(at(7, 0));
+  h.state.owner = 7;
+  h.state.hello = { key: KEY, text: '어제 코테 끝낸 거 좋았어요. 오늘은 이력서 한 줄부터 해요' };
+  await h.tap('wake');
+  const i = h.sent.findIndex(s => s.text === h.state.hello.text);
+  assert.equal(i, h.sent.length - 1, '기상 답 바로 다음');
+  assert.match(h.sent[i - 1].text, /기상/);
+  assert.equal(h.state.hello.sent, true);
+  await h.msg('일어났어');
+  assert.equal(h.sent.filter(s => /이력서 한 줄부터/.test(s.text)).length, 1, '같은 날 두 번 보내지 않는다');
+  const h2 = harness(at(7, 0));
+  h2.state.owner = 7;
+  h2.state.hello = { key: '2026-11-12', text: '지난 날 첫마디' };
+  await h2.msg('일어났어');
+  assert.ok(!h2.sent.some(s => s.text === '지난 날 첫마디'));
+  assert.equal(h2.state.hello, undefined);
+});
+
+test('내일 첫마디: 밤 정리가 어제를 정리했을 때만 남기고, 비서 말투를 같이 보낸다', async () => {
+  const systems = [];
+  const llm = { provider: 'claude', full: true, parse: async (t, ctx) => validate({ actions: [], reply: '' }, ctx), json: async (key, system) => (systems.push(system), { note: '- 한 줄', ops: [], hello: '어제 코테 끝낸 거 좋았어요. 오늘은 산책부터 해요' }) };
+  const setup = dayLog => {
+    const h = harness(at(4, 1, 14));
+    h.state.owner = 7;
+    h.state.dayLog = dayLog;
+    h.store.setGame({ ...GAME, secretary: { ...P, tone: '차분한 해요체' } });
+    const bot = createBot({ store: h.store, sync: { syncNow: async () => {} }, tg: { send: async () => {}, answer: async () => {}, clearButtons: async () => {} }, llm, memory: createMemory({ files: memFiles() }), state: h.state, now: h.now, opts: OPTS });
+    return { h, bot };
+  };
+  const a = setup({ '2026-11-13': [{ t: at(21, 0), who: 'me', text: '코테 끝냈다' }] });
+  await a.bot.tick();
+  await a.bot.idle();
+  assert.deepEqual(a.h.state.hello, { key: '2026-11-14', text: '어제 코테 끝낸 거 좋았어요. 오늘은 산책부터 해요' });
+  assert.match(systems[0], /3\) hello:/);
+  assert.match(systems[0], /hello의 말투: .*하루.*차분한 해요체/);
+  const b = setup({ '2026-11-12': [{ t: at(21, 0, 12), who: 'me', text: '오래된 날' }] });
+  await b.bot.tick();
+  await b.bot.idle();
+  assert.equal(b.h.state.hello, undefined, '밀린 옛날 정리의 첫마디는 쓰지 않는다');
+});
+
+test('비서의 한마디: 설정이 있으면 기상 버튼 답·아침 확인·핵심 끝·집중 끝 앞에 붙고, 없으면 그대로', async () => {
+  const h = harness(at(7, 6));
+  h.state.owner = 7;
+  h.store.setGame({ ...GAME, secretary: P });
+  await h.bot.tick();
+  const ping = h.sent.find(s => /일어났어요\?/.test(s.text)).text;
+  assert.equal(ping, `${lead('wake', P, `${KEY}:wake1`)}\n☀️ 일어났어요? 눌러 주면 아침 스피드런 시작할게요.`);
+  await h.tap('wake');
+  const r = h.sent.find(s => /기상/.test(s.text)).text;
+  assert.equal(r.split('\n')[0], lead('woke', P, KEY));
+  h.store.setTop3(KEY, 't1', { text: '코테', due: at(21, 0) });
+  await h.tap('t3d:t1');
+  assert.equal(h.last().split('\n')[0], lead('done', P, `${KEY}:t1`));
+  await h.msg('/focus 25');
+  h.now.set(at(7, 32));
+  await h.bot.tick();
+  const fx = h.sent.find(s => /25분 끝/.test(s.text)).text;
+  assert.ok(LINES.focusEnd.map(l => fill(l, '선장님')).includes(fx.split('\n')[0]));
+  assert.ok(JSON.stringify(h.state.history || h.state).includes(fx.split('\n')[0]), '보낸 글 그대로 대화 기록에 남는다');
+  // 설정이 없으면 예전 글 그대로
+  const h2 = harness(at(7, 6));
+  h2.state.owner = 7;
+  await h2.bot.tick();
+  assert.equal(h2.last(), '☀️ 일어났어요? 눌러 주면 아침 스피드런 시작할게요.');
+  await h2.tap('wake');
+  assert.match(h2.last(), /^☀️/);
+});
+
+test('봇 이름: 비서 이름으로 한 번만 바꾸고, 설정이 없으면 안 바꾸고, 실패하면 6시간 뒤에 다시', async () => {
+  const h = harness(at(10, 0));
+  h.state.owner = 7;
+  await h.bot.tick();
+  assert.deepEqual(h.calls.setName, [], '설정이 없으면 부르지 않는다');
+  h.store.setGame({ ...GAME, secretary: P });
+  for (let i = 0; i < 3; i++) await h.bot.tick();
+  assert.deepEqual(h.calls.setName, ['하루']);
+  assert.equal(h.state.nameSet, '하루');
+  const h2 = harness(at(10, 0));
+  h2.store.setGame({ ...GAME, secretary: P });
+  let n = 0;
+  h2.tg.setName = async () => {
+    n++;
+    throw new Error('Too Many Requests');
+  };
+  await h2.bot.tick();
+  await h2.bot.tick();
+  assert.equal(n, 1, '실패하면 다음 차례에 다시 부르지 않는다');
+  assert.equal(h2.state.nameSet, undefined);
+  h2.now.set(at(16, 1));
+  await h2.bot.tick();
+  assert.equal(n, 2, '6시간 뒤엔 다시 해 본다');
 });

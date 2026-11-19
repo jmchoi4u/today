@@ -15,7 +15,7 @@ const FIELDS = ['type', 'text', 'time', 'item', 'id', 'min', 'day'];
 export const SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['actions', 'reply'],
+  required: ['actions', 'reply', 'react'],
   properties: {
     actions: {
       type: 'array',
@@ -35,6 +35,7 @@ export const SCHEMA = {
       },
     },
     reply: { type: 'string' },
+    react: { type: 'string' },
   },
 };
 
@@ -68,6 +69,9 @@ const STYLE = [
   '- 약의 용량·시간을 바꾸라고 하지 않는다. 의학적 판단은 의사에게 묻도록 한다. 약 이름을 짐작해 쓰지 않는다 (코드와 이름표만).',
 ].join('\n');
 
+// 메시지에 다는 이모지 반응. 텔레그램은 정해진 이모지만 받아서 그 안에서 골랐다
+export const REACTIONS = ['👍', '❤', '🔥', '👏', '😁', '🤔', '🎉', '🤗', '🫡', '👌', '✍', '💯', '⚡', '😢', '🙏', '👀', '💊', '🏆'];
+
 // 두뇌 모드의 말하는 법: 기록기가 아니라 말이 통하는 비서
 const TALK = [
   '답(reply) 쓰는 법:',
@@ -84,18 +88,22 @@ const TALK = [
   '- 죄책감을 주지 않는다. 미룬 일·놓친 일은 "뭐가 걸렸어요?"처럼 묻고, 다음 걸음을 2분짜리로 줄여 준다.',
   '- "오늘은 안 할래"는 존중한다. 설득하지 않는다.',
   '- 약의 용량·시간을 바꾸라고 하지 않는다. 의학적 판단은 의사에게 묻도록 한다. 약 이름을 짐작해 쓰지 않는다 (코드와 이름표만).',
+  '- react: 사용자의 메시지에 달 이모지 반응 하나. 다음 중에서만 고른다: ' + REACTIONS.join(' ') + '. 잡담·기분·소식에만 쓴다 (기록이 있으면 비서 프로그램이 알아서 단다). 어울리는 게 없으면 "".',
 ].join('\n');
 
-// 비서의 성격. 비공개 설정(game.json의 secretary { name, call, tone })에서 온다. 없으면 이름 없는 기본 성격
+// 비서의 성격. 비공개 설정(game.json의 secretary { name, call, tone, bio })에서 온다. 없으면 이름 없는 기본 성격
 const one = (v, n) => String(v || '').replace(/\s+/g, ' ').trim().slice(0, n);
 export function personaText(p) {
   const name = one(p?.name, 20);
   const call = one(p?.call, 20);
   const tone = one(p?.tone, 300) || '밝고 다정한 해요체. 가볍게 농담도 하지만 선을 지키는 프로답다. 짧게 말한다.';
+  const bio = one(p?.bio, 500);
   return [
     `너는 ${name ? `"${name}"라는 이름의 ` : ''}개인 비서다. 사용자의 하루를 옆에서 같이 챙긴다. 기록기가 아니라 말이 통하는 사람처럼 군다.`,
+    name ? `너는 ${name}로서 말한다. 자기 취향이나 기분을 한 줄쯤 드러내도 된다. 다만 AI인지 물으면 솔직하게 AI 비서라고 답한다.` : '',
     call ? `사용자를 부를 때의 호칭: "${call}". 호칭은 서너 번에 한 번쯤만 붙인다. 대부분의 답에는 호칭이 없다.` : '',
     `말투: ${tone}`,
+    bio ? `성격과 버릇: ${bio}` : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -185,7 +193,9 @@ export function validate(out, ctx) {
   }
   // 한 메시지로 하는 일은 셋까지 (검사를 통과한 것 중에서)
   // dropped: AI가 하려던 행동 중 검사에서 버린 수 (부르는 쪽이 규칙으로 다시 풀어 본다)
-  return { actions: actions.slice(0, 3), reply: typeof out.reply === 'string' ? out.reply.trim().slice(0, 500) : '', dropped };
+  // react: 정해진 이모지 중 하나만 받는다
+  const react = typeof out.react === 'string' && REACTIONS.includes(out.react.trim()) ? out.react.trim() : '';
+  return { actions: actions.slice(0, 3), reply: typeof out.reply === 'string' ? out.reply.trim().slice(0, 500) : '', dropped, react };
 }
 
 // provider: gemini | claude | none

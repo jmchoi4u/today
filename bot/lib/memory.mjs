@@ -111,9 +111,10 @@ export function memoryText({ profile, facts, lastNote, lastKey }, redact = s => 
 export const DREAM_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['note', 'ops'],
+  required: ['note', 'ops', 'hello'],
   properties: {
     note: { type: 'string' },
+    hello: { type: 'string' },
     ops: {
       type: 'array',
       items: {
@@ -126,17 +127,21 @@ export const DREAM_SCHEMA = {
   },
 };
 
-export function dreamSystem() {
+// persona: 비서의 성격 글 (있으면 내일 첫마디를 그 말투로)
+export function dreamSystem(persona = '') {
+  const tone = String(persona || '').replace(/\s+/g, ' ').trim();
   return [
-    '너는 사용자의 개인 비서다. 하루가 끝났다. 오늘의 상태와 대화를 읽고 두 가지를 JSON으로 낸다.',
+    '너는 사용자의 개인 비서다. 하루가 끝났다. 오늘의 상태와 대화를 읽고 세 가지를 JSON으로 낸다.',
     '1) note: 오늘 일지. 5~8줄, 줄마다 "- "로 시작. 사실만: 무엇을 끝냈나(결과물), 무엇이 밀렸나, 사용자가 말한 이유나 기분(그 사람의 말로), 내일로 넘긴 것. 평가·훈계·칭찬을 쓰지 않는다. 대화가 거의 없었으면 그렇다고 한 줄만 쓴다.',
     '2) ops: "비서가 기억하는 사실" 목록을 고치는 제안. 대부분의 날은 빈 배열이 맞다. 최대 3개.',
     '   - add: 몇 주 뒤에도 쓸모 있는 사실만 (사용자가 직접 말한 선호·사정·약속·반복되는 패턴). 하루짜리 일, 짐작, 성격 해석은 넣지 않는다. text는 한 문장, 80자 안쪽.',
     '   - update: 이미 있는 사실(id)이 바뀌었을 때. delete: 사용자가 틀렸다고 했거나 더는 맞지 않을 때.',
     '   - 사용자가 "기억해"라고 한 것은 이미 들어가 있다. 다시 넣지 않는다.',
+    '3) hello: 내일 아침 사용자가 일어났을 때 비서가 건넬 첫마디 한 줄 (80자 안쪽). 오늘 있었던 구체적인 일 하나를 짚고, 내일의 한 걸음을 가볍게 권한다. 훈계하지 않는다. 약 이야기와 이름표("[...]")는 넣지 않는다. 짚을 일이 없으면 빈 문자열.',
     '약은 "[아침 약]" 같은 이름표로만 쓴다. 약 이름·용량을 짐작해 쓰지 않는다. 건강 진단이나 의학적 해석을 쓰지 않는다.',
     '쓰지 않는 칸은 빈 문자열 "".',
-  ].join('\n');
+    tone ? `hello의 말투: ${tone}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 export function dreamPrompt({ key, stateText, logText, memory }) {
@@ -155,7 +160,10 @@ export function validateDream(out, facts) {
     else if (o?.op === 'update' && ids.has(o.id) && text.length >= 4) ops.push({ op: 'update', id: o.id, text });
     else if (o?.op === 'delete' && ids.has(o.id)) ops.push({ op: 'delete', id: o.id, text: '' });
   }
-  return { note, ops: ops.slice(0, 3) };
+  // hello: 한 줄, 120자까지. 이름표나 약 코드가 새어 나왔으면 버린다
+  let hello = typeof out.hello === 'string' ? out.hello.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+  if (/[[\]]/.test(hello) || /\bM\d+\b/.test(hello)) hello = '';
+  return { note, ops: ops.slice(0, 3), hello };
 }
 
 // ----- 저장소와 묶기 -----
@@ -194,11 +202,11 @@ export function createMemory({ files, now = Date.now, log = () => {} }) {
     // 밤 정리: ask(system, user, schema) → AI 답(JSON). 일지를 쓰고, 검사를 통과한 제안만 기억에 반영한다.
     // out: 앞선 시도에서 이미 받은 답 (저장소 쓰기만 실패했을 때 AI를 다시 부르지 않고, 제안을 두 번 반영하지 않게).
     // onOut: 새로 받은 답을 부르는 쪽이 적어 두게 한다
-    async dream({ key, stateText, logText, ask, redact = s => s, out = null, onOut = () => {} }) {
+    async dream({ key, stateText, logText, ask, redact = s => s, out = null, onOut = () => {}, persona = '' }) {
       const cur = await load(null, true);
       if (!out) {
         const user = redact(dreamPrompt({ key, stateText, logText, memory: memoryText({ profile: cur.profile, facts: cur.facts }, redact) }));
-        out = validateDream(await ask(dreamSystem(), user, DREAM_SCHEMA), cur.facts);
+        out = validateDream(await ask(dreamSystem(persona), user, DREAM_SCHEMA), cur.facts);
         if (!out) throw new Error('밤 정리 답을 읽지 못했어요');
         onOut(out);
       }
@@ -216,7 +224,7 @@ export function createMemory({ files, now = Date.now, log = () => {} }) {
         if (!done) throw new Error('일지를 저장소에 쓰지 못했어요');
       }
       log(`밤 정리 ${key}: 일지 ${out.note ? '씀' : '없음'}, 기억 변경 ${applied.length}건`);
-      return { note: out.note, applied };
+      return { note: out.note, applied, hello: out.hello || '' }; // 예전 버전이 받아 둔 답에는 hello가 없다
     },
   };
 }

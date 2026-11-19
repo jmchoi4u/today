@@ -143,3 +143,28 @@ test('저장소 글 파일: 토큰은 헤더로, 없으면 null, 충돌은 confl
   assert.ok(calls.every(c => !c.url.includes('SECRET') && c.o.headers.Authorization === 'Bearer SECRET'));
   assert.equal(JSON.parse(calls[2].o.body).content, Buffer.from('글', 'utf8').toString('base64'));
 });
+
+test('기억: 내일 첫마디(hello)는 한 줄 120자까지, 이름표·약 코드가 섞이면 버리고, 예전 모양의 답도 읽는다', async () => {
+  const facts = [];
+  const v = (hello, extra = {}) => M.validateDream({ note: '- 한 줄', ops: [], hello, ...extra }, facts).hello;
+  assert.equal(v('  어제 코테 끝낸 거 좋았어요.\n오늘은 산책부터 해요  '), '어제 코테 끝낸 거 좋았어요. 오늘은 산책부터 해요');
+  assert.equal(v('가'.repeat(300)).length, 120);
+  assert.equal(v('[아침 약] 잊지 말아요'), '', '이름표가 새면 버린다');
+  assert.equal(v('오늘은 M1부터 챙겨요'), '', '약 코드가 새면 버린다');
+  assert.equal(v('끝]'), '');
+  assert.equal(v(42), '');
+  assert.equal(M.validateDream({ note: '- 한 줄', ops: [] }, facts).hello, '', '예전 모양 (hello 없음)');
+  assert.ok(M.DREAM_SCHEMA.required.includes('hello'));
+  assert.match(M.dreamSystem(), /세 가지를/);
+  assert.ok(!M.dreamSystem().includes('hello의 말투'), '성격이 없으면 말투 줄도 없다');
+  assert.match(M.dreamSystem('너는 "하루"라는 이름의 개인 비서다.\n말투: 차분한 해요체'), /hello의 말투: 너는 "하루"라는 이름의 개인 비서다\. 말투: 차분한 해요체$/);
+  // dream: 받은 hello를 돌려주고, 예전 버전이 받아 둔 답(hello 없음)도 그대로 된다
+  const files = fakeFiles();
+  const mem = M.createMemory({ files });
+  let system = '';
+  const r = await mem.dream({ key: '2026-11-17', stateText: 's', logText: 'l', persona: '말투: 차분한 해요체', ask: async s => ((system = s), { note: '- 한 줄', ops: [], hello: '좋은 하루였어요' }) });
+  assert.equal(r.hello, '좋은 하루였어요');
+  assert.match(system, /hello의 말투: 말투: 차분한 해요체/);
+  const old = await mem.dream({ key: '2026-11-18', stateText: 's', logText: 'l', ask: async () => assert.fail('AI를 다시 부르지 않는다'), out: { note: '- 예전 답', ops: [] } });
+  assert.equal(old.hello, '');
+});

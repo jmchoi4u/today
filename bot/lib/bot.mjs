@@ -8,6 +8,8 @@ import { parseMessage, findTime } from './parse.mjs';
 import * as B from './brain.mjs';
 import * as M from './memory.mjs';
 import * as Q from './quiet.mjs';
+import { lead } from './voice.mjs';
+import { personaText } from './llm.mjs';
 
 const { MIN, HOUR } = C;
 const fmt = C.fmtTime;
@@ -124,6 +126,26 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
   const items = (key = today()) => C.activeItems(store.config(), key);
   const itemById = (id, key) => items(key).find(i => i.id === id);
   const game = () => store.game();
+  const persona = () => game()?.secretary || null; // 비서의 이름·호칭·말투 (비공개 설정)
+  // 정해진 문구 앞에 비서의 한마디를 붙인다 (비서 설정이 없으면 그대로)
+  const dress = (kind, text, seed) => {
+    const l = text ? lead(kind, persona(), seed) : '';
+    return l ? `${l}\n${text}` : text;
+  };
+  // "입력 중" 표시와 이모지 반응: 안 돼도 답은 그대로 간다 (옛 설치·시험용 가짜에는 없을 수 있다)
+  const typing = () => {
+    try {
+      tg.typing?.(state.owner)?.catch?.(() => {});
+    } catch {}
+  };
+  const reactTo = (msgId, emoji) => {
+    try {
+      if (emoji && msgId) tg.react?.(state.owner, msgId, emoji)?.catch?.(() => {});
+    } catch {}
+  };
+  // 기록한 것에 맞는 반응 (앞에 있는 것이 먼저)
+  const REACT_BY = [[['med'], '💊'], [['top3_done'], '🔥'], [['top3_set', 'top3_due'], '✍'], [['wake', 'out'], '🫡'], [['focus_start'], '⚡'], [['note', 'park'], '✍']];
+  const reactionFor = actions => REACT_BY.find(([types]) => actions.some(a => types.includes(a.type)))?.[1] || '';
   const routineSteps = key => GM.routineState(GM.routineFor(game()?.routine, key), store.day(key), { focusOn: !!state.focus });
   const outStepId = () => game()?.routineGo?.step || 'out';
   const hasEv = (key, id) => C.live(store.day(key)).some(e => e.item === id);
@@ -529,7 +551,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
   const aiDown = e => `지금은 AI에 연결하지 못했어요 (${String(e?.message || '답이 없어요').slice(0, 120)}). 약·기상·마감처럼 정해진 말은 그대로 알아들어요. 쓰는 법은 /help`;
 
   // ----- 받은 메시지 -----
-  async function onText(text) {
+  async function onText(text, msgId = 0) {
     const t = String(text || '').trim();
     const key = today();
     state.hold = 0; // 내가 말했으니 밀어 둔 알림을 다시 보낸다
@@ -614,6 +636,8 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     save();
     let parsed = null;
     let llmReply = '';
+    let llmReact = '';
+    let byLLM = false; // AI 답을 그대로 썼는지 (규칙이 받았으면 false)
     // 머리말(걱정:, 불편:)과 "오늘"은 규칙이 바로 받는다
     const fixed = /^(?:걱정|주차장?|🅿️|🅿|불편)\s*[:：]|^(?:오늘\s*(?:어때|상태)?|상태|뭐\s*남았|남은\s*거)[?？]?$/.test(t) ? parseMessage(t, ctx) : null;
     // 비서가 물어본 질문의 답(메모·결과물·집중 메모·기상 시각·고칠지 여부·약)은 규칙이 먼저 받는다. 아니면 AI에게
@@ -623,6 +647,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     else if (llm?.full) {
       // 두뇌 모드: 모든 말을 AI가 먼저 읽는다 (오늘 상태 + 최근 대화, 약 이름은 가려서)
       try {
+        typing();
         const r = await askBrain(t, ctx);
         // AI 답을 못 읽었거나, 하려던 행동이 검사에서 다 버려졌으면 규칙으로 다시 풀어 본다
         // (AI가 일부러 아무것도 안 한 것은 그대로 둔다. 규칙이 대신 기록하지 않는다)
@@ -632,6 +657,8 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
         else if (r) {
           parsed = { actions: r.actions };
           llmReply = r.reply;
+          llmReact = r.react || '';
+          byLLM = true;
           if (ctx.awaiting && !r.actions.length) setAwait(null);
         } else if (ctx.awaiting) setAwait(null);
       } catch (e) {
@@ -647,6 +674,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
         try {
           const day = store.day(key);
           const masks = masksFor(key); // 기본 모드에서도 약 이름은 가려서 보낸다
+          typing();
           const r = unmaskActions(await llm.parse(B.redact(t, masks), {
             key,
             now: now(),
@@ -658,6 +686,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
           if (r) {
             parsed = { actions: r.actions };
             llmReply = r.reply;
+            byLLM = true;
           }
         } catch (e) {
           log('llm', e?.message);
@@ -666,9 +695,31 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
       }
     }
     if (!parsed) return say(`잘 못 알아들었어요.\n\n${HELP}`);
+    const woke = parsed.actions.some(a => a.type === 'wake');
     const reply = await apply(parsed.actions, { llmReply });
-    await say(reply || llmReply || '알겠어요.', takeButtons());
-    if (parsed.actions.some(a => a.type === 'wake')) await sendBrief(today()); // 일어났다고 하면 바로 브리핑
+    // 받은 메시지에 이모지 반응: 기록한 것에 맞게, 없으면 AI가 고른 것. 되돌리기·상태 보기에는 달지 않는다
+    const plain = parsed.actions.length && parsed.actions.every(a => ['undo', 'status'].includes(a.type));
+    if (!plain) reactTo(msgId, reactionFor(parsed.actions) || llmReact);
+    const line = reply || llmReply || '알겠어요.';
+    await say(woke && !byLLM ? dress('woke', line, key) : line, takeButtons());
+    if (woke) {
+      await greet(today()); // 어젯밤 정리 때 써 둔 오늘의 첫마디
+      await sendBrief(today()); // 일어났다고 하면 바로 브리핑
+    }
+  }
+
+  // 어젯밤 정리 때 써 둔 첫마디를 일어났을 때 한 번만 보낸다. 지난 날 것은 버린다
+  async function greet(key) {
+    const h = state.hello;
+    if (!h) return;
+    if (h.key < key) {
+      delete state.hello;
+      return save();
+    }
+    if (h.key !== key || h.sent) return;
+    h.sent = true;
+    save();
+    await say(h.text);
   }
 
   // 두뇌 모드의 질문: 오늘 상태 + 최근 대화(방금 내 말 빼고) + 새 메시지. 약 이름은 이름표로 가린다
@@ -732,7 +783,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     const label = (q.message?.reply_markup?.inline_keyboard || []).flat().find(x => x?.callback_data === data)?.text;
     note('me', `(버튼) ${label || data}`);
     const wokeNow = kind === 'wake';
-    if (kind === 'wake') reply = await apply([{ type: 'wake' }]);
+    if (kind === 'wake') reply = dress('woke', await apply([{ type: 'wake' }]), key);
     else if (kind === 'log') {
       const it = itemById(a, key);
       if (!it) toast = '항목을 찾지 못했어요';
@@ -751,7 +802,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
       state.routineOff[key] = 1;
       save();
       toast = '오늘 아침 루틴 알림은 그만할게요';
-    } else if (kind === 't3d') reply = await apply([{ type: 'top3_done', id: a, out: '' }]);
+    } else if (kind === 't3d') reply = dress('done', await apply([{ type: 'top3_done', id: a, out: '' }]), `${key}:${a}`);
     else if (kind === 't3s') {
       const t = C.top3Of(store.day(key)).find(x => x.id === a);
       if (t && !t.done) {
@@ -807,7 +858,10 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     // 같은 버튼을 두 번 누르지 않게 누른 메시지의 버튼은 지운다
     if (q.message?.message_id) tg.clearButtons(state.owner, q.message.message_id).catch(() => {});
     if (reply) await say(reply, takeButtons());
-    if (wokeNow) await sendBrief(key);
+    if (wokeNow) {
+      await greet(key);
+      await sendBrief(key);
+    }
   }
 
   async function handleUpdate(u) {
@@ -837,7 +891,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     if (chatId !== state.owner || (state.ownerUser && fromId !== state.ownerUser)) return;
     Q.onSeen(state.q, now()); // 반응이 있었다 (조용한 점검: 쉬던 알림이 돌아오고, 방금 알림은 답한 걸로 친다)
     if (q) return onCallback(q);
-    if (msg?.text) return onText(msg.text);
+    if (msg?.text) return onText(msg.text, msg.message_id);
   }
 
   let dreaming = null;
@@ -866,12 +920,13 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
       const masks = masksFor(yk);
       const end = C.dayStartTs(key, R()) - 1;
       const stateText = B.buildState({ now: end, key: yk, rollover: R(), day: store.day(yk), items: items(yk), masks, steps: routineSteps(yk), routineOff: !!state.routineOff[yk] });
-      await memory.dream({
+      const r = await memory.dream({
         key: yk,
         stateText,
         logText: M.dayLogText(state, yk),
         redact: s => B.redact(s, masks),
         ask: (system, user, schema) => llm.json(key, system, user, schema),
+        persona: persona() ? personaText(persona()) : '', // 내일 첫마디를 비서의 말투로
         out: state.dreamTry.out || null, // 앞선 시도에서 받은 답이 있으면 AI를 다시 부르지 않는다
         onOut: o => {
           state.dreamTry.out = o;
@@ -880,6 +935,8 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
       });
       state.dreamed = yk;
       state.dreamTry = null;
+      // 정리한 날이 어제면 그 첫마디는 오늘 일어났을 때 보낸다 (밀린 옛날 것은 쓰지 않는다)
+      if (r?.hello && yk === C.addDays(key, -1)) state.hello = { key, text: r.hello };
       delete state.dayLog[yk];
       save();
     } catch (e) {
@@ -887,9 +944,34 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     }
   }
 
+  // 텔레그램에 보이는 봇 이름을 비서 이름으로 맞춘다 (한 번만). 실패하면 6시간 뒤에 다시
+  let naming = null;
+  async function syncName() {
+    const name = String(persona()?.name || '').trim();
+    if (!name || state.nameSet === name || !tg.setName) return;
+    if (state.nameTry && now() - state.nameTry < 6 * HOUR) return;
+    try {
+      await tg.setName(name);
+      state.nameSet = name;
+      delete state.nameTry;
+      save();
+    } catch (e) {
+      log('name', e?.message);
+      state.nameTry = now();
+      save();
+    }
+  }
+
   // ----- 먼저 말 걸기 (30초마다) -----
   async function tick() {
     if (now() - lastPull >= PULL_EVERY) await pull(true).catch(e => log('pull', e?.message));
+    if (!naming) {
+      naming = syncName()
+        .catch(e => log('name', e?.message))
+        .finally(() => {
+          naming = null;
+        });
+    }
     if (!state.owner) return;
     const key = today();
     // 밤 정리는 뒤에서 돌린다 (AI와 저장소를 기다리느라 알림이 밀리지 않게)
@@ -949,8 +1031,10 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     }
     // 한 번에 두 개까지. 보내기에 성공한 것만 보낸 걸로 친다 (실패하면 다음 차례에 다시)
     for (const p of pings.slice(0, 2)) {
+      // 기상 확인과 집중 끝 알림에는 비서의 한마디를 붙인다 (보낸 글 그대로 대화 기록에 남는다)
+      const voice = p.kind === 'wake' ? 'wake' : p.kind === 'focus' && String(p.key).startsWith('fxend:') ? 'focusEnd' : '';
       try {
-        await say(p.text, p.buttons);
+        await say(voice ? dress(voice, p.text, `${key}:${p.key}`) : p.text, p.buttons);
       } catch (e) {
         log('send', e?.message);
         break;
