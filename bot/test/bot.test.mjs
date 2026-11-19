@@ -1331,3 +1331,49 @@ test('조용한 점검 다듬기: "오늘" 상태에 쉬는 중이 보이고, �
   await h.bot.tick();
   assert.equal(h.state.q.seen, seen, '타이머 끝 기록으로 반응 시각이 바뀌지 않는다');
 });
+
+test('한눈 보기: "오늘"은 진행 막대·체크·흐름으로 보여 주고, 앱 열기와 집중 시작 버튼을 붙인다', async () => {
+  const h = harness(at(7, 0));
+  h.state.owner = 7;
+  await h.msg('오늘');
+  assert.match(h.last(), /기상 기록 없음/);
+  assert.match(h.last(), /핵심 아직 없음/);
+  assert.deepEqual(h.sent.at(-1).buttons, [[{ text: '📱 앱에서 그래프 보기', url: 'https://x/' }]], '핵심이 없으면 집중 버튼은 없다');
+  await h.tap('wake');
+  h.now.set(at(7, 5));
+  await h.tap('log:med_am');
+  h.now.set(at(7, 20));
+  await h.tap('rt:shower');
+  await h.msg('코테 2문제 21시');
+  await h.msg('이력서 22시');
+  h.now.set(at(9, 0));
+  await h.tap(`t3d:${C.top3Of(h.store.day(KEY))[0].id}`);
+  h.now.set(at(9, 30));
+  await h.msg('오늘');
+  const text = h.last();
+  if (process.env.SHOW) console.log(`<<<\n${text}\n>>>`);
+  assert.match(text, /☀️ 기상 07:00/);
+  assert.match(text, /🌅 루틴 ▰▰▰▰▱ 4\/5 · 다음: 집 밖으로/);
+  assert.match(text, /🎯 핵심 ▰▱ 1\/2/);
+  assert.match(text, /✅ 코테 2문제/);
+  assert.match(text, /⬜ 이력서 · 22:00 \(/);
+  assert.match(text, /💊 약 ▰▱▱ 1\/3/);
+  assert.match(text, /✅ 아침 약 07:05/);
+  assert.match(text, /⬜ 오후 약/);
+  assert.match(text, /🧭 07:00 ☀️ → 07:05 💊 → 09:00 ✅/);
+  const row = h.sent.at(-1).buttons[0];
+  assert.deepEqual(row.map(b => b.url || b.callback_data), ['https://x/', 'fx:25']);
+  // 버튼으로 바로 집중을 시작하면 다음 한눈 보기엔 집중 버튼이 없다
+  await h.tap('fx:25');
+  await h.msg('/today');
+  assert.match(h.last(), /지금 집중 중/);
+  assert.equal(h.sent.at(-1).buttons[0].length, 1);
+});
+
+test('알림: 새 버전·설치 알림은 대화 기록에 남아서 비서가 앞뒤를 안다', async () => {
+  const h = harness(at(10, 0));
+  h.state.owner = 7;
+  await h.bot.notify('🔄 새 버전으로 다시 켜졌어요 (abc1234)');
+  assert.match(h.last(), /새 버전으로 다시 켜졌어요/);
+  assert.ok(JSON.stringify(h.state).includes('새 버전으로 다시 켜졌어요'), '최근 대화에 남는다');
+});

@@ -467,22 +467,61 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     return `💊 ${it.name} ${fmt(t)} 기록했어요.`;
   }
 
+  // 진행 막대: 한 것은 ▰, 남은 것은 ▱ (열 칸까지)
+  const bar = (done, total) => {
+    const w = Math.min(10, Math.max(1, total));
+    const f = total ? Math.round((Math.min(done, total) / total) * w) : 0;
+    return '▰'.repeat(f) + '▱'.repeat(w - f);
+  };
+  // 오늘 한눈 보기: 루틴·핵심·약을 진행 막대와 체크로, 아래에 오늘의 흐름
   function statusText(key) {
     const day = store.day(key), w = C.wakeOf(day);
-    const out = [`📋 ${C.fmtDate(key)} ${fmt(now())}`];
+    const out = [`📋 ${C.fmtDate(key)} ${fmt(now())}`, ''];
     const steps = routineSteps(key);
-    if (w) out.push(`☀️ 기상 ${fmt(w)}${steps.length ? ` · 아침 루틴 ${steps.filter(s => s.done).length}/${steps.length}` : ''}`);
-    for (const t of C.top3Of(day)) {
-      const due = t.due ? (t.done ? ` (${fmt(t.due)} 마감)` : t.due > now() ? ` (${fmt(t.due)} 마감 · ${C.fmtDur((t.due - now()) / MIN)} 남음)` : ` (${fmt(t.due)} 마감 지남)`) : '';
-      out.push(`${t.done ? '✅' : '🎯'} ${t.text}${due}${t.out ? ` → ${t.out}` : ''}`);
+    out.push(w ? `☀️ 기상 ${fmt(w)}` : '☀️ 기상 기록 없음');
+    if (w && steps.length) {
+      const n = steps.filter(s => s.done).length;
+      const next = steps.find(s => !s.done);
+      out.push(`🌅 루틴 ${bar(n, steps.length)} ${n}/${steps.length}${next && !state.routineOff[key] ? ` · 다음: ${next.text}` : ''}`);
     }
+    const t3 = C.top3Of(day);
+    if (t3.length) {
+      out.push(`🎯 핵심 ${bar(t3.filter(t => t.done).length, t3.length)} ${t3.filter(t => t.done).length}/${t3.length}`);
+      for (const t of t3) {
+        const due = !t.due ? '' : t.done ? '' : t.due > now() ? ` · ${fmt(t.due)} (${C.fmtDur((t.due - now()) / MIN)} 남음)` : ` · ${fmt(t.due)} 지남`;
+        out.push(`   ${t.done ? '✅' : '⬜'} ${t.text}${due}${t.out ? ` → ${t.out}` : ''}`);
+      }
+    } else out.push('🎯 핵심 아직 없음 (예: 코테 2문제 21시)');
     const meds = items(key).filter(i => i.cat === 'med' && i.type === 'check');
-    if (meds.length) out.push(`💊 ${meds.map(i => { const s = C.itemState(day, i); return `${i.name} ${s.count ? `✓ ${fmt(s.last)}` : s.skipped ? '건너뜀' : '·'}`; }).join(' / ')}`);
-    const focusMin = C.live(day).filter(e => e.item === 'focus').reduce((a, e) => a + (e.min || 0), 0);
-    if (focusMin) out.push(`⏱️ 집중 ${C.fmtDur(focusMin)}`);
+    if (meds.length) {
+      const sts = meds.map(i => ({ i, s: C.itemState(day, i) }));
+      const live = sts.filter(x => !x.s.skipped);
+      out.push(`💊 약 ${bar(live.filter(x => x.s.count).length, live.length)} ${live.filter(x => x.s.count).length}/${live.length}`);
+      for (const { i, s } of sts) out.push(`   ${s.count ? '✅' : s.skipped ? '➖' : '⬜'} ${i.name}${s.count ? ` ${fmt(s.evs[0].t)}` : s.skipped ? ' 건너뜀' : ''}`);
+    }
+    const fx = C.live(day).filter(e => e.item === 'focus');
+    const focusMin = fx.reduce((a, e) => a + (e.min || 0), 0);
+    if (focusMin) out.push(`⏱️ 집중 ${'▰'.repeat(Math.min(10, Math.ceil(focusMin / 25)))} ${C.fmtDur(focusMin)} (${fx.length}번)`);
     if (state.focus) out.push(`⏱️ 지금 집중 중 · ${fmt(state.focus.start + state.focus.dur * MIN)}에 끝나요`);
-    if (state.paused === key) out.push('🔕 오늘 먼저 말 걸기는 꺼져 있어요 (/resume)');
-    else if (state.rest === key) out.push('🌙 오늘은 쉬는 중이에요. 약·마감·일정 알림만 보내요 (/resume)');
+    // 오늘의 흐름: 기상, 약, 집중, 출발, 끝낸 핵심을 시간순으로
+    const flow = [];
+    if (w) flow.push([w, '☀️']);
+    for (const e of C.live(day)) {
+      const it = itemById(e.item, key);
+      if (it?.cat === 'med') flow.push([e.t, '💊']);
+      else if (e.item === 'focus') flow.push([e.t, `⏱️${e.min || ''}분`]);
+      else if (e.item === `rt:${outStepId()}`) flow.push([e.t, '🚪']);
+    }
+    for (const t of t3) if (t.done) flow.push([t.done, '✅']);
+    flow.sort((a, b) => a[0] - b[0]);
+    if (flow.length > 1) out.push('', `🧭 ${flow.slice(-10).map(([t, x]) => `${fmt(t)} ${x}`).join(' → ')}`);
+    if (state.paused === key) out.push('', '🔕 오늘 먼저 말 걸기는 꺼져 있어요 (/resume)');
+    else if (state.rest === key) out.push('', '🌙 오늘은 쉬는 중이에요. 약·마감·일정 알림만 보내요 (/resume)');
+    // 버튼: 앱에서 그래프로 보기, 안 끝난 핵심이 있으면 바로 집중 시작
+    const row = [];
+    if (opts.appUrl) row.push({ text: '📱 앱에서 그래프 보기', url: opts.appUrl });
+    if (!state.focus && t3.some(t => !t.done)) row.push(btn('⏱️ 25분 시작', 'fx:25'));
+    replyButtons = row.length ? [row] : null;
     return out.join('\n');
   }
 
@@ -498,7 +537,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     if (cmd) {
       const [, c, arg = ''] = cmd;
       if (c === 'start' || c === 'help') return say(HELP);
-      if (c === 'today') return say(statusText(key));
+      if (c === 'today') return say(statusText(key), takeButtons());
       if (c === 'focus') {
         forgetUndo();
         return say(startFocus(parseInt(arg, 10) || 25, key));
@@ -935,5 +974,6 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
   }
 
   // idle: 뒤에서 도는 밤 정리가 끝나기를 기다린다 (시험용)
-  return { handleUpdate, tick, apply, statusText, startFocus, endFocus, pull, sendBrief, idle: () => dreaming || Promise.resolve() };
+  // notify: 비서 프로그램이 주인에게 알릴 말 (새 버전, 설치 결과). 대화 기록에도 남아 AI가 앞뒤를 안다
+  return { handleUpdate, tick, apply, statusText, startFocus, endFocus, pull, sendBrief, notify: text => say(text), idle: () => dreaming || Promise.resolve() };
 }

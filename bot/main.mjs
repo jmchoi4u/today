@@ -308,14 +308,14 @@ async function main() {
     }
     if (state.owner && startupNotes.length) {
       const note = startupNotes.shift();
-      await tg.send(state.owner, note).catch(e => log('알림 전달 실패', e.message));
+      await bot.notify(note).catch(e => log('알림 전달 실패', e.message));
     }
     const nf = path.join(dataDir, 'notice.txt');
     if (!state.owner || !fs.existsSync(nf)) return;
     try {
       const text = fs.readFileSync(nf, 'utf8').trim();
       fs.unlinkSync(nf);
-      if (text) await tg.send(state.owner, `🔄 ${text}`);
+      if (text) await bot.notify(`🔄 ${text}`);
     } catch (e) {
       log('알림 전달 실패', e.message);
     }
