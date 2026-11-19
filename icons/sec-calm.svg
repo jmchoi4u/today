@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFE9C2"/><stop offset="1" stop-color="#F9BE84"/></linearGradient>
+    <radialGradient id="glow" cx=".5" cy=".42" r=".5"><stop offset="0" stop-color="#FFF8E6" stop-opacity=".95"/><stop offset="1" stop-color="#FFF8E6" stop-opacity="0"/></radialGradient>
+    <linearGradient id="skin" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFE6CF"/><stop offset="1" stop-color="#F7CBA6"/></linearGradient>
+    <linearGradient id="hair" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6A4331"/><stop offset=".55" stop-color="#4A2C1F"/><stop offset="1" stop-color="#34201A"/></linearGradient>
+    <linearGradient id="hairBack" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4A2C1F"/><stop offset="1" stop-color="#2E1B14"/></linearGradient>
+    <linearGradient id="coat" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3D4B78"/><stop offset="1" stop-color="#28325A"/></linearGradient>
+    <radialGradient id="iris" cx=".5" cy=".35" r=".7"><stop offset="0" stop-color="#9A6038"/><stop offset="1" stop-color="#4E2C18"/></radialGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <circle cx="256" cy="236" r="210" fill="url(#glow)"/>
+  
+
+  <!-- 뒷머리 -->
+  <path d="M120 262 C120 160 180 100 256 100 C332 100 392 160 392 262 C392 322 384 372 366 404 C356 422 334 424 318 414 L194 414 C178 424 156 422 146 404 C128 372 120 322 120 262 Z" fill="url(#hairBack)"/>
+
+  <!-- 어깨, 재킷, 블라우스 -->
+  <path d="M92 512 C96 444 144 404 256 404 C368 404 416 444 420 512 Z" fill="url(#coat)"/>
+  <path d="M204 408 L256 474 L308 408 C292 400 274 397 256 397 C238 397 220 400 204 408 Z" fill="#FFF8EC"/>
+  <path d="M204 408 L170 428 L236 512 L262 512 Z" fill="#4A5A8C"/>
+  <path d="M308 408 L342 428 L276 512 L250 512 Z" fill="#4A5A8C"/>
+  <circle cx="352" cy="470" r="10" fill="#EE8B3C" stroke="#7A3F12" stroke-width="3"/>
+
+  <!-- 목 -->
+  <path d="M228 350 L284 350 L284 404 C276 416 266 422 256 422 C246 422 236 416 228 404 Z" fill="#F7CBA6"/>
+  <path d="M228 366 C246 382 266 382 284 366 L284 350 L228 350 Z" fill="#E2A77E" opacity=".75"/>
+
+  <!-- 귀 -->
+  <ellipse cx="156" cy="274" rx="13" ry="20" fill="#F7CBA6"/>
+  <ellipse cx="356" cy="274" rx="13" ry="20" fill="#F7CBA6"/>
+
+  <!-- 얼굴 -->
+  <path d="M158 246 C158 176 200 136 256 136 C312 136 354 176 354 246 C354 302 332 344 298 364 C282 373 268 377 256 377 C244 377 230 373 214 364 C180 344 158 302 158 246 Z" fill="url(#skin)"/>
+
+  <!-- 볼 -->
+  <ellipse cx="184" cy="312" rx="22" ry="12" fill="#F59A86" opacity="0.5"/>
+  <ellipse cx="328" cy="312" rx="22" ry="12" fill="#F59A86" opacity="0.5"/>
+
+  <!-- 눈, 눈썹 -->
+  
+    <g>
+      <ellipse cx="206" cy="268" rx="19" ry="22" fill="#FFFDF8"/>
+      <ellipse cx="206" cy="270" rx="15" ry="18.5" fill="url(#iris)"/>
+      <ellipse cx="206" cy="272" rx="8" ry="10" fill="#22130C"/>
+      <circle cx="212" cy="261" r="5.5" fill="#FFFFFF"/>
+      <circle cx="200" cy="279" r="2.6" fill="#FFFFFF" opacity=".85"/>
+      <path d="M227 262 C218 244 196 242 184 256" fill="none" stroke="#2A1810" stroke-width="5.5" stroke-linecap="round"/>
+      <path d="M184 256 l-7 -7" fill="none" stroke="#2A1810" stroke-width="4" stroke-linecap="round"/>
+    </g>
+    <g>
+      <ellipse cx="306" cy="268" rx="19" ry="22" fill="#FFFDF8"/>
+      <ellipse cx="306" cy="270" rx="15" ry="18.5" fill="url(#iris)"/>
+      <ellipse cx="306" cy="272" rx="8" ry="10" fill="#22130C"/>
+      <circle cx="312" cy="261" r="5.5" fill="#FFFFFF"/>
+      <circle cx="300" cy="279" r="2.6" fill="#FFFFFF" opacity=".85"/>
+      <path d="M285 262 C294 244 316 242 328 256" fill="none" stroke="#2A1810" stroke-width="5.5" stroke-linecap="round"/>
+      <path d="M328 256 l7 -7" fill="none" stroke="#2A1810" stroke-width="4" stroke-linecap="round"/>
+    </g>
+  <path d="M184 232 C196 223 212 222 226 227" fill="none" stroke="#4A2E20" stroke-width="5.5" stroke-linecap="round"/><path d="M286 227 C300 222 316 223 328 232" fill="none" stroke="#4A2E20" stroke-width="5.5" stroke-linecap="round"/>
+
+  <!-- 코, 입 -->
+  <path d="M255 298 C252 304 253 308 258 309" fill="none" stroke="#D9987A" stroke-width="4.5" stroke-linecap="round"/>
+  <path d="M232 330 C244 342 268 342 280 330" fill="none" stroke="#B4513F" stroke-width="5.5" stroke-linecap="round"/>
+
+  <!-- 앞머리 -->
+  <path d="M148 268 C134 168 190 102 256 102 C326 102 380 166 364 268 C360 232 346 202 326 186 C300 206 262 216 220 214 C230 206 236 197 238 187 C204 202 172 226 148 268 Z" fill="url(#hair)"/>
+  <g fill="none" stroke="#9A6A4E" stroke-linecap="round" opacity=".55">
+    <path d="M198 142 C220 126 246 120 270 122" stroke-width="6"/>
+    <path d="M284 128 C304 134 322 148 334 166" stroke-width="4"/>
+    <path d="M172 196 C180 180 192 168 206 160" stroke-width="4"/>
+  </g>
+
+  <!-- 안경 -->
+  <g fill="none" stroke="#5A4034" stroke-width="4.5">
+    <rect x="170" y="238" width="72" height="62" rx="27" fill="#FFFFFF" fill-opacity=".08"/>
+    <rect x="270" y="238" width="72" height="62" rx="27" fill="#FFFFFF" fill-opacity=".08"/>
+    <path d="M242 264 C250 258 262 258 270 264"/>
+    <path d="M170 262 L156 258"/><path d="M342 262 L356 258"/>
+  </g>
+
+  <!-- 헤드셋 -->
+  <path d="M146 250 C146 164 196 114 256 114 C316 114 366 164 366 250" fill="none" stroke="#33241C" stroke-width="9" stroke-linecap="round"/>
+  <rect x="128" y="246" width="28" height="56" rx="13" fill="#EE8B3C" stroke="#33241C" stroke-width="5"/>
+  <rect x="356" y="246" width="28" height="56" rx="13" fill="#EE8B3C" stroke="#33241C" stroke-width="5"/>
+  <path d="M142 302 C144 344 172 362 212 364" fill="none" stroke="#33241C" stroke-width="5.5" stroke-linecap="round"/>
+  <rect x="206" y="355" width="26" height="17" rx="8.5" fill="#33241C"/>
+</svg>

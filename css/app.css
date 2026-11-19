@@ -140,6 +140,15 @@ p{margin:0}
 .say{display:grid;grid-template-columns:48px minmax(0,1fr);gap:10px;align-items:center}
 .mochi-face{width:48px;height:48px;display:block;animation:bob 2.8s ease-in-out infinite}
 @keyframes bob{50%{transform:translateY(-3px)}}
+.say.has-sec{grid-template-columns:64px minmax(0,1fr)}
+.sec-face{width:64px;height:64px;padding:0;border:2px solid var(--frame);border-radius:50%;overflow:hidden;background:var(--well);display:block;cursor:pointer;animation:bob 2.8s ease-in-out infinite}
+.sec-face:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.sec-face:active{scale:.94}
+.sec-face img{width:150%;height:150%;max-width:none;margin:-22% 0 0 -25%;display:block} /* 작은 동그라미 안에서 얼굴이 크게 보이게 당겨 넣는다 */
+.sec-name{display:inline-block;font-family:var(--font-display);font-size:12px;line-height:1.6;background:var(--tag-bg);color:var(--tag-ink);border-radius:999px;padding:0 8px;margin-bottom:2px}
+.sec-bubble{position:relative;margin-top:10px;background:var(--panel);color:var(--ink);border:2px solid var(--frame);border-radius:14px;padding:8px 12px;font-size:14px;line-height:1.5;animation:pop .35s ease-out}
+.sec-bubble::before{content:'';position:absolute;top:-8px;left:26px;width:12px;height:12px;background:var(--panel);border-left:2px solid var(--frame);border-top:2px solid var(--frame);transform:rotate(45deg)}
+.sec-link{display:inline-block;margin-left:4px;color:var(--accent);font-family:var(--font-display)}
 .kn-body{fill:var(--mochi);stroke:var(--mochi-line);stroke-width:2}
 .kn-eye{fill:var(--mochi-line)}
 .kn-gl{fill:none;stroke:var(--glasses);stroke-width:1.3}
@@ -579,7 +588,7 @@ summary{font-family:var(--font-display);font-size:14.5px;cursor:pointer;min-heig
 .toast button{flex:none;min-height:34px;font-family:var(--font-display);font-size:14px;background:var(--accent);color:var(--on-accent);border:2px solid var(--frame);border-radius:9px;padding:1px 12px}
 
 @media (prefers-reduced-motion: reduce){
-  .cloud,.mochi-face,.pop,.sheet,.sync-dot.busy{animation:none}
+  .cloud,.mochi-face,.sec-face,.sec-bubble,.pop,.sheet,.sync-dot.busy{animation:none}
   .burst.go{animation-duration:.01s}
   .mini-bar i,.hud-exp i,.track .fill,.tile{transition:none}
 }

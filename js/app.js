@@ -7,8 +7,9 @@ import * as PK from './pk.js';
 import * as GM from './game.js';
 import * as WX from './weather.js';
 import { createSound, DEFAULT_VOL, clampVol } from './sound.js';
+import * as SEC from './secretary.js';
 
-const VERSION = '1.7.5';
+const VERSION = '1.8.0';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -21,7 +22,7 @@ const vol = () => clampVol(local().vol ?? DEFAULT_VOL);
 const sound = createSound({ volume: vol });
 const rollover = () => cfg().prefs?.rollover ?? 4;
 const todayKey = () => C.dayKey(now(), rollover());
-const ui = { tab: 'today', date: null, just: null, peakMode: 'dose', peakRating: 'attn' };
+const ui = { tab: 'today', date: null, just: null, peakMode: 'dose', peakRating: 'attn', secSay: null, secTaps: 0 };
 const viewKey = () => ui.date || todayKey();
 const isToday = () => viewKey() === todayKey();
 const getDay = k => (store.hasDay(k) ? store.day(k) : null);
@@ -38,6 +39,27 @@ const IC = {
   x: '<svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>',
 };
 const MOCHI = '<svg viewBox="0 0 32 32" class="mochi-face" aria-hidden="true"><circle cx="16" cy="17.5" r="12.5" class="kn-body"/><path d="M15 5.2c-1-3 1-4.6 3.3-3.9" class="kn-line"/><circle cx="12" cy="16.5" r="3.7" class="kn-gl"/><circle cx="20" cy="16.5" r="3.7" class="kn-gl"/><circle cx="12" cy="16.5" r="1.4" class="kn-eye"/><circle cx="20" cy="16.5" r="1.4" class="kn-eye"/><path d="M14.3 21.5q1.7 1.3 3.4 0" class="kn-line"/></svg>';
+// 비서 캐릭터: 비공개 설정에 이름이 있을 때만. 없으면 기존 마스코트
+const sec = () => SEC.persona(store.game());
+const secSay = () => (ui.secSay && ui.secSay.until > now() ? ui.secSay : null);
+const faceHtml = mood => {
+  const p = sec();
+  return p ? `<button class="sec-face" data-act="sec-tap" aria-label="${esc(p.name)}에게 말 걸기"><img src="${SEC.artSrc(mood)}" alt="" width="64" height="64"></button>` : MOCHI;
+};
+const secName = p => (p ? `<small class="sec-name">${esc(p.name)}</small>` : '');
+const secBubble = p => {
+  const say = p && secSay();
+  return say ? `<div class="sec-bubble" role="status">${esc(say.text)}${p.link ? ` <a class="sec-link" href="${esc(p.link)}" target="_blank" rel="noopener">💬 텔레그램에서 말하기</a>` : ''}</div>` : '';
+};
+let secTimer = 0;
+// 말풍선을 8초 보여 주고 지운다
+const secShow = r => {
+  ui.secSay = { ...r, until: now() + 8000 };
+  clearTimeout(secTimer);
+  secTimer = setTimeout(() => {
+    if (!secSay()) render();
+  }, 8100);
+};
 const SCORE = ['', '😣', '😕', '😐', '🙂', '😄'];
 const PORTION = ['', '가볍게', '보통', '든든하게'];
 const EMOJIS = ['💊', '🟡', '💧', '☕', '🍚', '🥗', '🏃', '🏋️', '🧘', '🚶', '🧩', '📨', '📖', '🧹', '🚿', '🌙', '⚖️', '🦷', '☀️', '⭐'];
@@ -347,7 +369,8 @@ function ddayHtml() {
 function startHtml() {
   const u = typicalWakeTs(todayKey());
   const usual = u && u <= now() - 10 * MIN ? `<button class="btn" data-act="wake-at" data-arg="${u}">평소 ${C.fmtTime(u)}</button>` : '';
-  return `<section class="win start-card"><div class="say">${MOCHI}<div><b>언제 일어났어요?</b><p>고른 시각부터 오늘이 시작돼요. 늦게 일어난 날도 똑같이 흘러가요.</p></div></div>
+  const p = sec();
+  return `<section class="win start-card"><div class="say${p ? ' has-sec' : ''}">${faceHtml(secSay()?.mood || 'calm')}<div>${secName(p)}<b>언제 일어났어요?</b><p>고른 시각부터 오늘이 시작돼요. 늦게 일어난 날도 똑같이 흘러가요.</p></div></div>${secBubble(p)}
     <div class="row-btns"><button class="btn pri" data-act="wake" data-arg="0">방금</button>${usual}<button class="btn" data-act="wake" data-arg="30">30분 전</button><button class="btn" data-act="wake" data-arg="60">1시간 전</button><button class="btn" data-act="wake" data-arg="120">2시간 전</button><button class="btn" data-act="time-wake">직접 고르기</button></div></section>`;
 }
 
@@ -475,7 +498,8 @@ function coachHtml(day) {
   if (!['clear', 'closed', 'start'].includes(s.key)) btns.push('<button class="btn ghost" data-act="coach-later">나중에</button>');
   const scale = s.scale ? `<div class="scale-dots coach-scale" role="group" aria-label="${esc(C.SPECIAL[s.scale]?.name || '')} 1부터 5">${[1, 2, 3, 4, 5].map(n => `<button class="dot" data-act="cond" data-arg="${s.scale}:${n}">${n}</button>`).join('')}</div>` : '';
   const lines = s.lines?.length ? `<ul class="coach-lines">${s.lines.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
-  return `<section class="win coach tone-${s.tone}"><div class="say">${MOCHI}<div><b>${esc(s.icon)} ${esc(s.title)}</b><p>${esc(s.sub || '')}</p></div></div>${lines}${scale}${btns.length ? `<div class="row-btns">${btns.join('')}</div>` : ''}</section>`;
+  const p = sec();
+  return `<section class="win coach tone-${s.tone}"><div class="say${p ? ' has-sec' : ''}">${faceHtml(secSay()?.mood || SEC.moodOf(s))}<div>${secName(p)}<b>${esc(s.icon)} ${esc(s.title)}</b><p>${esc(s.sub || '')}</p></div></div>${secBubble(p)}${lines}${scale}${btns.length ? `<div class="row-btns">${btns.join('')}</div>` : ''}</section>`;
 }
 
 function top3Html(day) {
@@ -1150,7 +1174,7 @@ function guideHtml() {
   const sec = (title, rows) => `<details><summary>${title}</summary><ul class="med-ul">${rows.map(r => `<li>${r}</li>`).join('')}</ul></details>`;
   return win('사용설명서', 'GUIDE', `<p class="lead">앱과 텔레그램 비서는 같은 기록을 써요. 어느 쪽에서 눌러도 돼요.</p>
     <div class="row-btns"><a class="btn pri" href="guide.html" style="text-decoration:none;text-align:center">전체 기능 설명서 열기</a></div>
-    ${sec('오늘 탭', ['타일을 한 번 누르면 기록, 체크한 타일을 누르면 시각 고치기, 타일의 ⋯은 건너뛰기와 지난 시각 기록', '아침 루틴: 일어나고 4시간 동안 보여요. 맨 위 줄이 집 밖으로 나가는 마감이에요', '핵심 3가지: 끝이 보이는 일 하나와 마감 시각. 끝내면 결과물 한 줄', '코치 카드: 지금 할 한 가지. "나중에"를 누르면 잠시 뒤 다시 물어요', '집중 타이머: 25분·50분. 약 효과가 가장 높은 구간엔 코치가 50분을 권해요. 끝나면 알림음이 울려요 (음량은 설정 → 소리)'])}
+    ${sec('오늘 탭', ['타일을 한 번 누르면 기록, 체크한 타일을 누르면 시각 고치기, 타일의 ⋯은 건너뛰기와 지난 시각 기록', '아침 루틴: 일어나고 4시간 동안 보여요. 맨 위 줄이 집 밖으로 나가는 마감이에요', '핵심 3가지: 끝이 보이는 일 하나와 마감 시각. 끝내면 결과물 한 줄', '코치 카드: 지금 할 한 가지. "나중에"를 누르면 잠시 뒤 다시 물어요', '비서 얼굴을 누르면 오늘 상황을 말해 줘요 (비서 설정이 있을 때)', '집중 타이머: 25분·50분. 약 효과가 가장 높은 구간엔 코치가 50분을 권해요. 끝나면 알림음이 울려요 (음량은 설정 → 소리)'])}
     ${sec('흐름·약 탭', ['맨 위 "＋ 기록 추가": 기상·취침·집중과 모든 항목을 원하는 시각에 넣어요. 지난 날짜도 돼요', '기록 줄을 누르면 시각·내용을 고치거나 지워요', '약 창에 맞춘 하루: 지금 칸이 밝게 보여요', '약: 효과 곡선, 복용 기록, 언제 먹으면 언제까지, 내 데이터로 본 피크'])}
     ${sec('성장 탭', ['메인 퀘스트: 지금 단계의 과제를 누르면 +50 EXP. 숫자가 붙은 과제는 기록에서 자동으로 세요', '레벨과 스탯: 목표를 채우면 등급이 올라요', '주간 리뷰: 정한 요일·시각에 코치가 물어요. 한 주 기록과 지난번 숫자가 미리 채워져 있어요'])}
     ${sec('텔레그램 비서: 보내는 말', ['<b>코테 2문제 21시</b> / 21시까지 이력서 / 1시간 뒤 메일 답장 → 오늘 핵심 + 마감', '<b>내일 10시 코테</b> → 내일 핵심', '<b>끝</b> / 끝 풀이 올림 → 가장 급한 일을 끝낸 걸로 + 결과물 한 줄', '<b>걱정: …</b> → 주차장에 넣고 걱정 시간에 같이 봐요', '<b>불편: …</b> → 불편 한 줄', '<b>약 먹었어 / 일어났어 / 나왔어</b>', '<b>3시 10분에 약 먹었어 / 10시 반에 일어났어</b> → 지난 일은 그 시각으로 (이미 남긴 기록이면 시각을 고쳐요)', '<b>되돌려</b> → 방금 비서가 남긴 기록을 취소', '<b>기억해: …</b> → 오래 기억할 사실. <b>기억</b> = 목록, <b>잊어 m3</b> = 지우기 (두뇌 모드)', '<b>오늘</b> → 지금 상태'])}
@@ -2191,6 +2215,17 @@ const actions = {
   coach(arg) {
     runCoach(coachList(store.day(todayKey()))[0]?.[arg]);
   },
+  'sec-tap'() {
+    const p = sec();
+    if (!p) return;
+    haptic(10);
+    const day = store.day(todayKey());
+    const s = { woke: !!C.wakeOf(day), top3: C.top3Of(day).map(t => ({ text: t.text, done: !!t.done, due: t.due || 0 })), now: now(), fmt: C.fmtTime, focusMin: C.live(day).filter(e => e.item === 'focus').reduce((a, e) => a + (e.min || 0), 0) };
+    const seed = `${todayKey()}:${ui.secTaps}`;
+    secShow(ui.secTaps % 2 === 0 ? SEC.report(s, p, seed) : SEC.chat(p, seed, new Date(now()).getHours()));
+    ui.secTaps++;
+    render();
+  },
   'coach-later'() {
     const s = coachList(store.day(todayKey()))[0];
     if (s) store.setLocal({ snooze: { ...local().snooze, [s.key]: now() + 45 * MIN } });
@@ -2434,6 +2469,8 @@ function celebrate(a, b) {
   if (big) {
     burst(big);
     toast(msgs.join(' · '));
+    const p = sec();
+    if (p) secShow(SEC.cheer(p, `${b.key}:${big}`));
   }
 }
 store.subscribe(kind => {
