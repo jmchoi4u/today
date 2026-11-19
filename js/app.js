@@ -9,7 +9,7 @@ import * as WX from './weather.js';
 import { createSound, DEFAULT_VOL, clampVol } from './sound.js';
 import * as SEC from './secretary.js';
 
-const VERSION = '1.8.1';
+const VERSION = '1.8.2';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
