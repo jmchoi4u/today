@@ -662,6 +662,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
       items: its.filter(i => i.cat !== 'med').map(i => ({ id: i.id, name: i.name })),
       top3: C.top3Of(day).map(x => ({ id: x.id, text: x.text, done: !!x.done })),
       masks: masks.filter(m => m.code),
+      persona: game()?.secretary || null, // 비서의 이름·호칭·말투 (비공개 설정)
     });
     return unmaskActions(r, masks, text);
   }

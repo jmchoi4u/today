@@ -68,11 +68,41 @@ const STYLE = [
   '- 약의 용량·시간을 바꾸라고 하지 않는다. 의학적 판단은 의사에게 묻도록 한다. 약 이름을 짐작해 쓰지 않는다 (코드와 이름표만).',
 ].join('\n');
 
-export function systemPrompt(full = false) {
+// 두뇌 모드의 말하는 법: 기록기가 아니라 말이 통하는 비서
+const TALK = [
+  '답(reply) 쓰는 법:',
+  '- 모든 메시지에 사람처럼 답한다. 한 번에 1~3문장, 이모지는 많아야 하나.',
+  '- 기록할 게 있으면 actions에 넣는다. "기록했어요" 같은 확인 문구는 비서 프로그램이 따로 붙이니 쓰지 않는다. reply에는 그다음 한마디를 쓴다: 짧은 반응 하나, 그리고 오늘 상태를 보고 고른 다음 한 걸음이나 질문 하나. 정말 덧붙일 게 없을 때만 "".',
+  '- 잡담·고민·질문에는 대화로 답한다. 먼저 그 말을 한 줄로 받아 주고, 도움이 될 것 하나만 건넨다 (2분짜리 첫 동작, 둘 중 고르기, 열린 질문 하나 가운데서).',
+  '- "뭐 하지", "막막해", "시작이 안 돼" 같은 말 → 오늘 핵심 중 하나를 골라 (없으면 하나 정하자고 하고) 첫 2분 동작을 말해 주고, 25분 타이머를 켤지 묻는다. 좋다고 하면 focus_start를 넣는다.',
+  '- 걱정·비교·새 아이디어가 이어지면 → 한 줄로 받아 주고 주차장에 넣자고 한다 (park). 길게 같이 파고들지 않는다.',
+  '- "오늘 상태"와 기억에 있는 사실만 말한다. 없는 일정·기록을 지어내지 않는다. 모르면 모른다고 한다.',
+  '- 최근 대화에서 비서가 방금 한 말을 되풀이하지 않는다. 같은 권유를 두 번 하지 않는다.',
+  '- 맞장구나 칭찬을 늘어놓지 않는다. 칭찬은 한 번, 구체적으로. 사실과 다르면 부드럽게 바로잡는다.',
+  '- 죄책감을 주지 않는다. 미룬 일·놓친 일은 "뭐가 걸렸어요?"처럼 묻고, 다음 걸음을 2분짜리로 줄여 준다.',
+  '- "오늘은 안 할래"는 존중한다. 설득하지 않는다.',
+  '- 약의 용량·시간을 바꾸라고 하지 않는다. 의학적 판단은 의사에게 묻도록 한다. 약 이름을 짐작해 쓰지 않는다 (코드와 이름표만).',
+].join('\n');
+
+// 비서의 성격. 비공개 설정(game.json의 secretary { name, call, tone })에서 온다. 없으면 이름 없는 기본 성격
+const one = (v, n) => String(v || '').replace(/\s+/g, ' ').trim().slice(0, n);
+export function personaText(p) {
+  const name = one(p?.name, 20);
+  const call = one(p?.call, 20);
+  const tone = one(p?.tone, 300) || '밝고 다정한 해요체. 가볍게 농담도 하지만 선을 지키는 프로답다. 짧게 말한다.';
+  return [
+    `너는 ${name ? `"${name}"라는 이름의 ` : ''}개인 비서다. 사용자의 하루를 옆에서 같이 챙긴다. 기록기가 아니라 말이 통하는 사람처럼 군다.`,
+    call ? `사용자를 부를 때의 호칭: "${call}" (매번 부르지는 않는다).` : '',
+    `말투: ${tone}`,
+  ].filter(Boolean).join('\n');
+}
+
+export function systemPrompt(full = false, persona = null) {
   const head = full
     ? [
-        '너는 사용자의 하루를 같이 챙기는 개인 비서다. 사용자는 텔레그램으로 짧은 한국어를 보낸다.',
-        '"오늘 상태"와 "최근 대화"를 보고 새 메시지의 뜻을 알아낸 뒤, 필요한 행동과 짧은 답을 JSON으로 낸다.',
+        personaText(persona),
+        '사용자는 텔레그램으로 짧은 한국어를 보낸다.',
+        '"오늘 상태"와 "최근 대화"를 보고 새 메시지의 뜻을 알아낸 뒤, 필요한 행동과 답을 JSON으로 낸다.',
         '최근 대화에서 비서가 방금 물어본 것이 있으면 새 메시지는 대개 그 답이다. "(버튼)"은 사용자가 누른 버튼이다.',
         '시각은 "HH:MM" 24시간으로 쓴다. 오전/오후가 없으면 문맥(지금 시각, 지난 일인지 앞으로의 일인지)으로 고른다.',
         '확실할 때만 행동을 넣는다. 애매하면 actions는 비우고 reply로 짧게 되묻는다. 한 메시지에 행동은 셋까지.',
@@ -81,7 +111,7 @@ export function systemPrompt(full = false) {
         '너는 사용자의 하루 기록 비서다. 사용자가 텔레그램으로 보낸 짧은 한국어 메시지를 아래 행동으로 바꾼다.',
         '확실할 때만 행동을 넣는다. 애매하면 actions는 비우고 reply로 짧게 되묻는다.',
       ];
-  return [...head, actionsDoc(full), STYLE].join('\n\n');
+  return [...head, actionsDoc(full), full ? TALK : STYLE].join('\n\n');
 }
 
 // 기본 모드의 질문: 메시지와 최소한의 목록만
@@ -153,7 +183,7 @@ export function validate(out, ctx) {
   }
   // 한 메시지로 하는 일은 셋까지 (검사를 통과한 것 중에서)
   // dropped: AI가 하려던 행동 중 검사에서 버린 수 (부르는 쪽이 규칙으로 다시 풀어 본다)
-  return { actions: actions.slice(0, 3), reply: s(out.reply), dropped };
+  return { actions: actions.slice(0, 3), reply: typeof out.reply === 'string' ? out.reply.trim().slice(0, 500) : '', dropped };
 }
 
 // provider: gemini | claude | none
@@ -180,7 +210,7 @@ export function createLLM({ provider, geminiKey, geminiModel, claudeKey, claudeM
     model: p === 'claude' ? cm : geminiModel || 'gemini-flash-latest',
     full: !!full,
     async parse(text, ctx) {
-      return validate(await call(ctx.key, { system: systemPrompt(!!ctx.prompt), user: userPrompt(text, ctx), schema: SCHEMA }), ctx);
+      return validate(await call(ctx.key, { system: systemPrompt(!!ctx.prompt, ctx.persona), user: userPrompt(text, ctx), schema: SCHEMA }), ctx);
     },
     // 정해진 모양(schema)의 JSON 답을 받는다 (밤 정리 등). 검사는 부르는 쪽에서
     json: (key, system, user, schema) => call(key, { system, user, schema }),
