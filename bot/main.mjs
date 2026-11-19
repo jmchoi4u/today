@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { createStore } from '../js/store.js';
 import { createSync } from '../js/sync.js';
 import * as C from '../js/core.js';
@@ -141,9 +142,37 @@ const sync = createSync({
 const tg = createTelegram({ token: env.TELEGRAM_BOT_TOKEN });
 // 두뇌 모드(오늘 상태·최근 대화까지 보내고 모든 말을 AI가 먼저 읽기)는 학습에 쓰지 않는 유료 API에서만 기본으로 켠다.
 // Gemini도 유료 등급이면 LLM_FULL_CONTEXT=1로 켤 수 있다
-const provider = (env.LLM_PROVIDER || 'gemini').toLowerCase();
+const wanted = (env.LLM_PROVIDER || 'gemini').toLowerCase();
+// Claude를 쓰는데 공식 SDK가 없으면 스스로 깐다. 설치 프로그램은 처음 고른 AI에 맞춰서만 깔고,
+// 자동 업데이트는 코드만 바꾸기 때문에, .env만 고쳐 Claude로 바꾸면 SDK가 없다.
+// → 'had' | 'installed' | 'failed'
+function ensureClaudeSdk() {
+  const pkg = path.join(here, 'node_modules', '@anthropic-ai', 'sdk', 'package.json');
+  if (fs.existsSync(pkg)) return 'had';
+  log('Claude 연결 파일이 없어서 설치해요 (npm install, 1~2분 걸려요)');
+  const dir = path.dirname(process.execPath);
+  const npm = [path.join(dir, 'npm.cmd'), path.join(dir, 'npm')].find(p => fs.existsSync(p)) || 'npm';
+  try {
+    const r = spawnSync(`"${npm}" install --omit=dev --no-audit --no-fund`, { cwd: here, shell: true, windowsHide: true, timeout: 5 * 60_000, encoding: 'utf8' });
+    if (r.status !== 0) log('npm install 실패', String(r.stderr || r.error?.message || '').trim().slice(-300));
+  } catch (e) {
+    log('npm install 실패', e.message);
+  }
+  return fs.existsSync(pkg) ? 'installed' : 'failed';
+}
+const startupNotes = []; // 켜진 뒤 주인에게 한 번 보낼 말
+let provider = wanted;
+if (wanted === 'claude' && env.ANTHROPIC_API_KEY) {
+  const sdk = ensureClaudeSdk();
+  if (sdk === 'installed') startupNotes.push('🧠 Claude 연결 파일을 설치했어요. 이제 두뇌 모드로 답해요.');
+  if (sdk === 'failed') {
+    // 못 깔았으면 멈추지 않고 Gemini(있으면)나 규칙으로 돈다
+    provider = env.GEMINI_API_KEY ? 'gemini' : 'none';
+    startupNotes.push(`⚠️ Claude 연결 파일을 설치하지 못했어요. 미니 PC에서 bot 폴더의 install.cmd를 다시 실행해 주세요. 그동안은 ${provider === 'gemini' ? 'Gemini' : '정해진 말만 알아듣는 규칙으'}로 답해요.`);
+  }
+}
 const fc = String(env.LLM_FULL_CONTEXT || '').trim();
-const fullCtx = /^(1|on|true|yes)$/i.test(fc) ? true : /^(0|off|false|no)$/i.test(fc) ? false : provider === 'claude';
+const fullCtx = /^(1|on|true|yes)$/i.test(fc) ? provider !== 'none' : /^(0|off|false|no)$/i.test(fc) ? false : provider === 'claude';
 const llm = createLLM({
   provider,
   geminiKey: env.GEMINI_API_KEY,
@@ -207,6 +236,7 @@ async function check() {
     ok = false;
     console.log(`[X] 기록 저장소 ${repo}: ${st.msg || '받아 오지 못했어요'}. 토큰의 Repository access(이 저장소)와 Contents 권한(Read and write)을 확인해 주세요.`);
   }
+  if (wanted === 'claude' && provider !== 'claude') console.log('[!] AI: Claude 연결 파일을 설치하지 못했어요. install.cmd를 다시 실행해 주세요 (인터넷 연결 확인).');
   if (!llm) console.log(`[-] AI: ${env.LLM_PROVIDER === 'none' ? '쓰지 않음' : '키가 없어서 쓰지 않음'} (규칙으로 알아듣는 말만 처리해요)`);
   else {
     try {
@@ -275,6 +305,10 @@ async function main() {
     if (supervised && envTime() !== envAt) {
       log('.env가 바뀌어서 다시 켜요');
       return shutdown();
+    }
+    if (state.owner && startupNotes.length) {
+      const note = startupNotes.shift();
+      await tg.send(state.owner, note).catch(e => log('알림 전달 실패', e.message));
     }
     const nf = path.join(dataDir, 'notice.txt');
     if (!state.owner || !fs.existsSync(nf)) return;

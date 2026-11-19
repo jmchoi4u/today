@@ -486,6 +486,9 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     return out.join('\n');
   }
 
+  // AI를 못 불렀을 때: 긴 도움말을 매번 쏟지 않고 한 줄로 알린다
+  const aiDown = e => `지금은 AI에 연결하지 못했어요 (${String(e?.message || '답이 없어요').slice(0, 120)}). 약·기상·마감처럼 정해진 말은 그대로 알아들어요. 쓰는 법은 /help`;
+
   // ----- 받은 메시지 -----
   async function onText(text) {
     const t = String(text || '').trim();
@@ -595,7 +598,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
       } catch (e) {
         log('llm', e?.message);
         parsed = parseMessage(t, ctx); // AI가 안 되면 규칙으로
-        if (!parsed) return say(`${e?.message || 'AI가 답하지 못했어요'}. 규칙으로도 못 알아들었어요.\n\n${HELP}`);
+        if (!parsed) return say(aiDown(e));
       }
     } else {
       parsed = parseMessage(t, ctx);
@@ -619,7 +622,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
           }
         } catch (e) {
           log('llm', e?.message);
-          return say(`${e?.message || 'AI가 답하지 못했어요'}\n\n${HELP}`);
+          return say(aiDown(e));
         }
       }
     }

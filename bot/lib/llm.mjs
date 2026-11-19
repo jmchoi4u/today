@@ -204,7 +204,13 @@ export function createLLM({ provider, geminiKey, geminiModel, claudeKey, claudeM
     used.set(day, (used.get(day) || 0) + 1);
     for (const k of used.keys()) if (k !== day) used.delete(k);
     if (p === 'gemini') return geminiJSON({ apiKey: geminiKey, model: geminiModel, fetchFn, ...args });
-    claude ||= await import('./llm-claude.mjs');
+    if (!claude) {
+      try {
+        claude = await import('./llm-claude.mjs');
+      } catch {
+        throw new Error('Claude 연결 파일이 아직 없어요 (미니 PC에서 install.cmd를 다시 실행하면 깔려요)');
+      }
+    }
     return claude.claudeJSON({ apiKey: claudeKey, model: cm, ...args });
   }
   return {
