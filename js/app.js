@@ -6,8 +6,9 @@ import { stripSvg, flowSvg, medSvg, peakSvg, radarSvg } from './chart.js';
 import * as PK from './pk.js';
 import * as GM from './game.js';
 import * as WX from './weather.js';
+import { createSound, DEFAULT_VOL, clampVol } from './sound.js';
 
-const VERSION = '1.7.4';
+const VERSION = '1.7.5';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -16,6 +17,8 @@ const store = createStore({ storage: window.localStorage });
 const now = () => Date.now();
 const cfg = () => store.config();
 const local = () => store.local();
+const vol = () => clampVol(local().vol ?? DEFAULT_VOL);
+const sound = createSound({ volume: vol });
 const rollover = () => cfg().prefs?.rollover ?? 4;
 const todayKey = () => C.dayKey(now(), rollover());
 const ui = { tab: 'today', date: null, just: null, peakMode: 'dose', peakRating: 'attn' };
@@ -1134,6 +1137,7 @@ function setHtml() {
 
   h += win('화면', 'THEME', `<div class="seg">${[['auto', '기기 설정'], ['light', '밝게'], ['dark', '어둡게']].map(([v, t]) => `<button class="${l.theme === v ? 'on' : ''}" data-act="theme" data-arg="${v}">${t}</button>`).join('')}</div>`);
 
+  h += win('소리', 'SOUND', `<div class="set-row"><span>집중이 끝날 때 알림음<small>0으로 두면 소리 없이 진동만 해요</small></span><span><input type="range" min="0" max="100" step="5" data-change="vol" aria-label="알림음 음량" value="${vol()}" style="width:120px;accent-color:var(--accent);vertical-align:middle"> <b id="vol-val">${vol()}</b></span></div><div class="row-btns"><button class="btn" data-act="sound-test">들어보기</button></div>`);
   h += guideHtml();
   h += win('데이터', 'DATA', `<p class="lead">기록은 이 기기${l.gh ? '와 연결한 비공개 저장소' : ''}에 있어요. 파일로 따로 보관할 수도 있어요.</p>
     <div class="row-btns"><button class="btn" data-act="export">파일로 내보내기</button><button class="btn" data-act="import-pick">파일에서 가져오기</button></div><input type="file" id="imp" accept="application/json,.json" data-change="import" hidden>`);
@@ -1146,7 +1150,7 @@ function guideHtml() {
   const sec = (title, rows) => `<details><summary>${title}</summary><ul class="med-ul">${rows.map(r => `<li>${r}</li>`).join('')}</ul></details>`;
   return win('사용설명서', 'GUIDE', `<p class="lead">앱과 텔레그램 비서는 같은 기록을 써요. 어느 쪽에서 눌러도 돼요.</p>
     <div class="row-btns"><a class="btn pri" href="guide.html" style="text-decoration:none;text-align:center">전체 기능 설명서 열기</a></div>
-    ${sec('오늘 탭', ['타일을 한 번 누르면 기록, 체크한 타일을 누르면 시각 고치기, 타일의 ⋯은 건너뛰기와 지난 시각 기록', '아침 루틴: 일어나고 4시간 동안 보여요. 맨 위 줄이 집 밖으로 나가는 마감이에요', '핵심 3가지: 끝이 보이는 일 하나와 마감 시각. 끝내면 결과물 한 줄', '코치 카드: 지금 할 한 가지. "나중에"를 누르면 잠시 뒤 다시 물어요', '집중 타이머: 25분·50분. 약 효과가 가장 높은 구간엔 코치가 50분을 권해요'])}
+    ${sec('오늘 탭', ['타일을 한 번 누르면 기록, 체크한 타일을 누르면 시각 고치기, 타일의 ⋯은 건너뛰기와 지난 시각 기록', '아침 루틴: 일어나고 4시간 동안 보여요. 맨 위 줄이 집 밖으로 나가는 마감이에요', '핵심 3가지: 끝이 보이는 일 하나와 마감 시각. 끝내면 결과물 한 줄', '코치 카드: 지금 할 한 가지. "나중에"를 누르면 잠시 뒤 다시 물어요', '집중 타이머: 25분·50분. 약 효과가 가장 높은 구간엔 코치가 50분을 권해요. 끝나면 알림음이 울려요 (음량은 설정 → 소리)'])}
     ${sec('흐름·약 탭', ['맨 위 "＋ 기록 추가": 기상·취침·집중과 모든 항목을 원하는 시각에 넣어요. 지난 날짜도 돼요', '기록 줄을 누르면 시각·내용을 고치거나 지워요', '약 창에 맞춘 하루: 지금 칸이 밝게 보여요', '약: 효과 곡선, 복용 기록, 언제 먹으면 언제까지, 내 데이터로 본 피크'])}
     ${sec('성장 탭', ['메인 퀘스트: 지금 단계의 과제를 누르면 +50 EXP. 숫자가 붙은 과제는 기록에서 자동으로 세요', '레벨과 스탯: 목표를 채우면 등급이 올라요', '주간 리뷰: 정한 요일·시각에 코치가 물어요. 한 주 기록과 지난번 숫자가 미리 채워져 있어요'])}
     ${sec('텔레그램 비서: 보내는 말', ['<b>코테 2문제 21시</b> / 21시까지 이력서 / 1시간 뒤 메일 답장 → 오늘 핵심 + 마감', '<b>내일 10시 코테</b> → 내일 핵심', '<b>끝</b> / 끝 풀이 올림 → 가장 급한 일을 끝낸 걸로 + 결과물 한 줄', '<b>걱정: …</b> → 주차장에 넣고 걱정 시간에 같이 봐요', '<b>불편: …</b> → 불편 한 줄', '<b>약 먹었어 / 일어났어 / 나왔어</b>', '<b>3시 10분에 약 먹었어 / 10시 반에 일어났어</b> → 지난 일은 그 시각으로 (이미 남긴 기록이면 시각을 고쳐요)', '<b>되돌려</b> → 방금 비서가 남긴 기록을 취소', '<b>기억해: …</b> → 오래 기억할 사실. <b>기억</b> = 목록, <b>잊어 m3</b> = 지우기 (두뇌 모드)', '<b>오늘</b> → 지금 상태'])}
@@ -1943,7 +1947,8 @@ function renderLogged() {
 
 // ---------- 집중 타이머 ----------
 
-let focusTimer = 0, audio = null;
+let focusTimer = 0;
+let chime = null; // 끝날 때 울리도록 걸어 둔 차임
 function ensureFocusTick() {
   const on = !!local().focus;
   if (on && !focusTimer) focusTimer = setInterval(tickFocus, 1000);
@@ -1961,28 +1966,32 @@ function tickFocus() {
   if (c) c.textContent = mmss(left);
   if (b) b.style.width = (100 - (left / (f.dur * MIN)) * 100).toFixed(1) + '%';
 }
-function beep() {
-  try {
-    const o = audio.createOscillator(), g = audio.createGain();
-    o.frequency.value = 880;
-    g.gain.setValueAtTime(0.15, audio.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.9);
-    o.connect(g).connect(audio.destination);
-    o.start();
-    o.stop(audio.currentTime + 0.9);
-  } catch {
-    /* 소리를 낼 수 없는 상태 */
-  }
+// 아직 안 울린 차임을 거둔다
+function dropChime() {
+  if (chime && !chime.played()) chime.cancel();
+  chime = null;
 }
+// 끝날 때 울릴 차임을 미리 걸어 둔다. 다른 탭에 가 있어도 제시간에 울린다
+function armChime() {
+  dropChime();
+  const f = local().focus;
+  if (!f) return;
+  const left = (f.start + f.dur * MIN - now()) / 1000;
+  if (left > 0) chime = sound.schedule('done', left);
+}
+// 브라우저는 내가 화면을 누른 뒤에만 소리를 허락한다. 새로고침 뒤에도 차임이 다시 걸리게
+const wakeSound = () => sound.unlock().then(ok => ok && local().focus && !chime && armChime());
 function finishFocus(auto) {
   const f = local().focus;
   if (!f) return;
+  const rang = !!chime?.played();
+  dropChime();
   const min = Math.min(f.dur, Math.round((now() - f.start) / MIN));
   store.setLocal({ focus: null });
   if (min >= 1) store.logEvent(C.dayKey(f.start, rollover()), 'focus', { t: f.start, min, note: f.label || undefined, autoWake: true });
   if (auto) {
     haptic([200, 100, 200]);
-    beep();
+    if (!rang) sound.play('done');
     // 2분 시작이 끝나면 바로 이어 갈 수 있게
     if (f.dur <= 5) toast(`${min}분 했어요. 시작이 제일 어려워요`, { label: '25분 이어서', fn: () => actions.focus('25' + (f.t3 ? ':' + f.t3 : '')) });
     else toast(`집중 ${min}분 끝. 5분 쉬어요`, { label: '한 번 더', fn: () => actions.focus(f.dur + (f.t3 ? ':' + f.t3 : '')) });
@@ -2211,17 +2220,13 @@ const actions = {
   focus(arg) {
     const [m, t3] = String(arg).split(':');
     const label = t3 ? C.top3Of(store.day(todayKey())).find(t => t.id === t3)?.text : '';
-    try {
-      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
-      audio.resume?.();
-    } catch {
-      audio = null;
-    }
     store.setLocal({ focus: { start: now(), dur: +m, label: label || '', t3: t3 || '' } });
+    sound.unlock().then(ok => ok && armChime());
     toast(+m <= 5 ? `${m}분만. 파일 열고 첫 줄` : `${m}분 집중 시작`);
   },
   'focus-stop': () => finishFocus(false),
   'focus-cancel'() {
+    dropChime();
     store.setLocal({ focus: null });
   },
   review: () => openReviewSheet(),
@@ -2266,6 +2271,11 @@ const actions = {
     store.setLocal({ theme: arg });
     applyTheme();
   },
+  async 'sound-test'() {
+    const ok = await sound.unlock();
+    if (!ok) return toast('이 브라우저에서 소리를 낼 수 없어요');
+    if (!sound.play('done') && vol() === 0) toast('음량이 0이에요. 막대를 올려 주세요');
+  },
   export() {
     const blob = new Blob([JSON.stringify(store.exportAll(), null, 1)], { type: 'application/json' });
     const a = document.createElement('a');
@@ -2298,6 +2308,11 @@ const changes = {
   'tw-input': el => tw && el.value && twSet(C.tsFor(tw.key, el.value, rollover())),
   rollover: el => store.setPrefs({ rollover: +el.value }),
   season: el => el.value && store.setPrefs({ seasonStart: el.value }),
+  vol(el) {
+    store.setLocal({ vol: clampVol(el.value) });
+    armChime();
+    sound.unlock().then(() => sound.play('done'));
+  },
   async import(el) {
     const file = el.files?.[0];
     if (!file) return;
@@ -2328,6 +2343,7 @@ const flushDown = () => {
   }
 };
 document.addEventListener('pointerdown', e => {
+  wakeSound();
   downAt = performance.now();
   setTimeout(() => downAt && performance.now() - downAt >= 1500 && flushDown(), 1600);
   held = false;
@@ -2356,6 +2372,7 @@ document.addEventListener('contextmenu', e => {
   if (e.target.closest?.('[data-hold]')) e.preventDefault();
 });
 document.addEventListener('click', e => {
+  wakeSound();
   const el = e.target.closest?.('[data-act]');
   const wasHeld = held;
   held = false;
@@ -2370,6 +2387,12 @@ document.addEventListener('click', e => {
 document.addEventListener('change', e => {
   const el = e.target.closest?.('[data-change]');
   if (el) changes[el.dataset.change]?.(el);
+});
+// 막대를 끄는 동안 숫자만 바로 바꾼다
+document.addEventListener('input', e => {
+  if (!e.target.matches?.('[data-change="vol"]')) return;
+  const b = $('#vol-val');
+  if (b) b.textContent = e.target.value;
 });
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeSheet();
