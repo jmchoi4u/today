@@ -168,3 +168,29 @@ test('report: 호칭은 어떤 씨앗엔 붙고 어떤 씨앗엔 안 붙는다',
   assert.equal(report(base(), P, 'same').text, report(base(), P, 'same').text);
   assert.ok(SEEDS.every(s => !report(base(), NOCALL, s).text.startsWith(',')));
 });
+
+// 약속과 연속 기록 (bond.js의 bond 모양)
+const BOND = (o = {}) => ({ todayKept: false, yesterday: 'kept', streak: 0, best: 0, week: { made: 0, kept: 0 }, mood: 'calm', ...o });
+
+test('report 약속: 연속 기록을 집중 시간 뒤에 붙인다', () => {
+  const r = report(base({ top3: [{ text: 'a', done: true, due: 0 }], focusMin: 30, bond: BOND({ streak: 3, todayKept: true, mood: 'cheer' }) }), NOCALL, 's');
+  assert.equal(r.text, '오늘 핵심 1개를 다 끝내셨어요. 이제 쉬어도 돼요. 집중은 30분 했어요. 🔥 연속 3일째예요.');
+  assert.equal(r.mood, 'cheer');
+  assert.ok(!report(base({ bond: BOND({ streak: 0 }) }), NOCALL, 's').text.includes('연속'), '0일이면 안 붙인다');
+});
+
+test('report 약속: 어제 미제출이고 오늘 아직이면 그 말을 붙이고, 오늘 지켰으면 연속 기록', () => {
+  const missed = BOND({ yesterday: 'missed', streak: 2, mood: 'worry' });
+  assert.ok(report(base({ bond: missed }), NOCALL, 's').text.endsWith(' 어제 약속은 미제출로 남았어요.'));
+  const kept = BOND({ yesterday: 'missed', todayKept: true, streak: 1, mood: 'happy' });
+  assert.ok(report(base({ top3: [{ text: 'a', done: true, due: 0 }], bond: kept }), NOCALL, 's').text.endsWith(' 🔥 연속 1일째예요.'));
+});
+
+test('report 약속: 보통 말(핵심 없음·진행 중)일 때만 worry 표정을 쓴다', () => {
+  const worry = BOND({ yesterday: 'missed', mood: 'worry' });
+  assert.equal(report(base({ bond: worry }), NOCALL, 's').mood, 'worry', '핵심 없음');
+  assert.equal(report(base({ top3: [{ text: 'a', done: false, due: NOW + H }], bond: worry }), NOCALL, 's').mood, 'worry', '진행 중');
+  assert.equal(report(base({ woke: false, bond: worry }), NOCALL, 's').mood, 'calm', '기상 전은 그대로');
+  assert.equal(report(base({ top3: [{ text: 'a', done: true, due: 0 }], bond: worry }), NOCALL, 's').mood, 'cheer', '다 끝냈으면 그대로');
+  assert.equal(report(base({ top3: [{ text: 'a', done: false, due: NOW + H }, { text: 'b', done: true, due: 0 }], bond: BOND({ mood: 'happy' }) }), NOCALL, 's').mood, 'happy', 'worry가 아니면 그대로');
+});

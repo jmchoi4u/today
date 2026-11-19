@@ -3,6 +3,7 @@
 import crypto from 'node:crypto';
 import * as C from '../../js/core.js';
 import * as GM from '../../js/game.js';
+import * as BD from '../../js/bond.js';
 import { planPings, btn } from './planner.mjs';
 import { parseMessage, findTime } from './parse.mjs';
 import * as B from './brain.mjs';
@@ -127,6 +128,15 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
   const itemById = (id, key) => items(key).find(i => i.id === id);
   const game = () => store.game();
   const persona = () => game()?.secretary || null; // 비서의 이름·호칭·말투 (비공개 설정)
+  // 약속과 연속 기록: 비서 설정이 있을 때만
+  const bondOn = () => !!game()?.secretary?.name;
+  const bondNow = key => BD.bond(C.lastDays(key, 60).map(k => ({ key: k, list: store.hasDay(k) ? BD.promisesOf(C.top3Of(store.day(k))) : [] })), key);
+  const bondText = b => `연속 ${b.streak}일, 어제 ${{ kept: '지킴', missed: '미제출', none: '약속 없음' }[b.yesterday]}, 이번 주 ${b.week.kept}/${b.week.made} 지킴`;
+  // 이미 한 번 미룬 약속: 끝냈는지, 미제출로 남길지 고르게 한다
+  const movedOnce = t => {
+    replyButtons = [[btn('✅ 끝냈어요', `t3d:${t.id}`), btn('미제출로 남기기', `t3m:${t.id}`)]];
+    return `이 약속은 이미 한 번 미뤘어요 ("${t.text}"). 끝냈으면 끝냈다고, 아니면 미제출로 남겨 주세요.`;
+  };
   // 정해진 문구 앞에 비서의 한마디를 붙인다 (비서 설정이 없으면 그대로)
   const dress = (kind, text, seed) => {
     const l = text ? lead(kind, persona(), seed) : '';
@@ -193,7 +203,10 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     if (!id) return { error: '핵심 3가지가 꽉 찼어요. 하나를 끝내거나 앱에서 비우고 다시 보내 주세요.' };
     // 같은 일을 다시 말했는데 새 마감이 없으면 기존 마감을 건드리지 않는다
     if (same && !due) return { id, kept: !!same.due };
-    store.setTop3(key, id, { text, due: due || 0, done: 0 });
+    // 약속: 같은 일을 새 시각으로 다시 보내는 것도 미루기다 (부르는 쪽이 한 번만 받아 준다)
+    if (same && bondOn() && same.due && due && due !== same.due) return { id, move: same };
+    // 비운 칸을 새로 쓸 때만 예전 약속의 미루기·미제출 표시를 지운다
+    store.setTop3(key, id, { text, due: due || 0, done: 0, ...(bondOn() && !same ? { moved: 0, why: '', drop: 0 } : {}) });
     push();
     return { id };
   }
@@ -243,6 +256,9 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     const before = Object.fromEntries(keys.map(k => [k, B.snapshot(store.day(k))]));
     const routineBefore = !!state.routineOff[key];
     const focusBefore = state.focus ? { ...state.focus } : null;
+    // 이번에 처음 지킨 약속이 생겼는지 보려고 지금 지킨 것을 기억해 둔다
+    const keptIds = () => new Set(BD.promisesOf(C.top3Of(store.day(key))).filter(BD.kept).map(p => p.id));
+    const keptBefore = bondOn() ? keptIds() : null;
     const firstLine = lines.length;
     for (const a of actions) {
       if (a.type === 'park') {
@@ -299,7 +315,17 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
           lines.push(`"${a.text}"은 이미 있어요. 마감은 그대로 둘게요.`);
           continue;
         }
-        if (due) lines.push(`🎯 ${k !== key ? '내일 ' : ''}"${a.text}" ${fmt(due)} 마감으로 잡았어요. 30분 전에 알려 드릴게요.`);
+        if (r.move) {
+          // 이미 약속한 일의 마감을 새로 말했다: 미루기 한 번으로 친다
+          if ((r.move.moved || 0) >= 1) lines.push(movedOnce(r.move));
+          else {
+            store.setTop3(k, r.id, { due, moved: 1 });
+            push();
+            lines.push(`⏰ "${a.text}" ${fmt(due)} 마감. 30분 전에 알려 드릴게요. 미루기를 한 번 썼어요.`);
+          }
+          continue;
+        }
+        if (due) lines.push(`🎯 ${k !== key ? '내일 ' : ''}"${a.text}" ${fmt(due)} 마감으로 잡았어요. 30분 전에 알려 드릴게요.${bondOn() && k === key ? ' 약속으로 받았어요. 미루기는 한 번만 돼요.' : ''}`);
         else {
           lines.push(`🎯 ${k !== key ? '내일 ' : ''}"${a.text}" 넣었어요. 마감 몇 시로 할까요? (예: 21시)`);
           if (k === key) nextAwait = { kind: 'due', id: r.id };
@@ -321,9 +347,27 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
           nextAwait = { kind: 'due', id: a.id, n: (a.n || 0) + 1 };
           continue;
         }
-        store.setTop3(key, a.id, { due: a.due });
+        // 약속: 이미 마감이 있는 일의 마감을 바꾸면 미루기 한 번으로 친다
+        const move = bondOn() && t.due && !t.done;
+        if (move && (t.moved || 0) >= 1) {
+          lines.push(movedOnce(t));
+          continue;
+        }
+        store.setTop3(key, a.id, move ? { due: a.due, moved: 1 } : { due: a.due });
         push();
-        lines.push(`⏰ "${t.text}" ${fmt(a.due)} 마감. 30분 전에 알려 드릴게요.`);
+        lines.push(`⏰ "${t.text}" ${fmt(a.due)} 마감. 30분 전에 알려 드릴게요.${move ? ' 미루기를 한 번 썼어요.' : ''}`);
+      } else if (a.type === 'top3_move') {
+        // 이유를 받고 미루기 (약속마다 한 번)
+        const t = C.top3Of(store.day(key)).find(x => x.id === a.id);
+        if (!t || t.done) continue;
+        if ((t.moved || 0) >= 1) {
+          lines.push(movedOnce(t));
+          continue;
+        }
+        const due = Math.max(t.due || 0, now()) + (a.min || 15) * MIN;
+        store.setTop3(key, t.id, { due, moved: (t.moved || 0) + 1, why: String(a.why || '').slice(0, 200) });
+        push();
+        lines.push(`⏰ "${t.text}" 마감을 ${fmt(due)}로 미뤘어요. 미루기는 이걸로 끝이에요.`);
       } else if (a.type === 'top3_done') {
         const open = C.top3Of(store.day(key)).filter(t => !t.done).sort((x, y) => (x.due || Infinity) - (y.due || Infinity));
         const t = (a.id && C.top3Of(store.day(key)).find(x => x.id === a.id)) || open[0];
@@ -401,6 +445,8 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
         lines.push(statusText(key));
       }
     }
+    // 약속을 처음 지켰으면 연속 기록을 알려 준다
+    if (keptBefore && [...keptIds()].some(id => !keptBefore.has(id))) lines.push(BD.keptLine(bondNow(key)));
     if (llmReply) lines.push(llmReply);
     // 주차장·상태 보기만 한 경우엔 기다리던 질문을 지우지 않는다
     // (약 기록은 다른 질문의 답이 아니다. 약 알림의 답은 따로 기다린다)
@@ -499,6 +545,8 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
   function statusText(key) {
     const day = store.day(key), w = C.wakeOf(day);
     const out = [`📋 ${C.fmtDate(key)} ${fmt(now())}`, ''];
+    const bd = bondOn();
+    if (bd) out.push(BD.statusLine(bondNow(key)));
     const steps = routineSteps(key);
     out.push(w ? `☀️ 기상 ${fmt(w)}` : '☀️ 기상 기록 없음');
     if (w && steps.length) {
@@ -510,8 +558,11 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     if (t3.length) {
       out.push(`🎯 핵심 ${bar(t3.filter(t => t.done).length, t3.length)} ${t3.filter(t => t.done).length}/${t3.length}`);
       for (const t of t3) {
-        const due = !t.due ? '' : t.done ? '' : t.due > now() ? ` · ${fmt(t.due)} (${C.fmtDur((t.due - now()) / MIN)} 남음)` : ` · ${fmt(t.due)} 지남`;
-        out.push(`   ${t.done ? '✅' : '⬜'} ${t.text}${due}${t.out ? ` → ${t.out}` : ''}`);
+        // 약속: 미제출로 남긴 일은 ✖️, 결과물 없이 끝낸 일은 표시
+        const drop = bd && t.drop && !t.done;
+        const due = drop ? ' · 미제출' : !t.due ? '' : t.done ? '' : t.due > now() ? ` · ${fmt(t.due)} (${C.fmtDur((t.due - now()) / MIN)} 남음)` : ` · ${fmt(t.due)} 지남`;
+        const noOut = bd && t.done && !String(t.out || '').trim() ? ' (결과물 없음)' : '';
+        out.push(`   ${t.done ? '✅' : drop ? '✖️' : '⬜'} ${t.text}${noOut}${due}${t.out ? ` → ${t.out}` : ''}`);
       }
     } else out.push('🎯 핵심 아직 없음 (예: 코테 2문제 21시)');
     const meds = items(key).filter(i => i.cat === 'med' && i.type === 'check');
@@ -709,8 +760,18 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
   }
 
   // 어젯밤 정리 때 써 둔 첫마디를 일어났을 때 한 번만 보낸다. 지난 날 것은 버린다
+  // 비서 설정이 있으면 하루 한 번, 첫마디 아래에 약속 한마디를 붙여 한 메시지로 보낸다
   async function greet(key) {
     const h = state.hello;
+    if (bondOn()) {
+      if (h && h.key < key) delete state.hello;
+      if (state.greeted === key) return save();
+      const hi = h && h.key === key && !h.sent ? h : null;
+      if (hi) hi.sent = true;
+      state.greeted = key;
+      save();
+      return say(`${hi ? `${hi.text}\n` : ''}${BD.morningLine(bondNow(key))}`);
+    }
     if (!h) return;
     if (h.key < key) {
       delete state.hello;
@@ -743,6 +804,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
       calendar: brief?.calendarFor?.(key, ctx.rollover) || null,
       paused: state.paused === key,
       lastUndo: (state.undo || []).at(-1) || null,
+      bond: bondOn() ? bondText(bondNow(key)) : '',
     });
     const hist = B.recentHistory(state, ctx.now).slice(0, -1); // 마지막은 방금 보낸 내 말
     // 기억 3층: 나에 대해(profile), 기억하는 사실, 어제 일지. 못 읽어도 대화는 그대로 한다
@@ -805,11 +867,27 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     } else if (kind === 't3d') reply = dress('done', await apply([{ type: 'top3_done', id: a, out: '' }]), `${key}:${a}`);
     else if (kind === 't3s') {
       const t = C.top3Of(store.day(key)).find(x => x.id === a);
-      if (t && !t.done) {
+      if (t && !t.done && bondOn()) {
+        // 약속: 미루기는 한 번만, 이유 한 줄을 받고 나서
+        const min = +b || 15;
+        if ((t.moved || 0) >= 1) reply = movedOnce(t);
+        else {
+          setAwait({ kind: 'why', id: a, min });
+          reply = `미루는 이유를 한 줄로 보내 주세요. 받으면 ${min}분 미룰게요.`;
+        }
+      } else if (t && !t.done) {
         const due = Math.max(t.due || 0, now()) + (+b || 15) * MIN;
         store.setTop3(key, a, { due });
         push();
         reply = `⏰ "${t.text}" 마감 ${fmt(due)}로 미뤘어요. 이번엔 끝내요.`;
+      }
+    } else if (kind === 't3m') {
+      // 약속을 미제출로 남긴다 (더 묻지 않는다)
+      const t = C.top3Of(store.day(key)).find(x => x.id === a);
+      if (t && !t.done) {
+        store.setTop3(key, a, { drop: now() });
+        push();
+        reply = `"${t.text}" 미제출로 남겼어요. 뭐가 걸렸는지 한 줄로 알려 주면 같이 볼게요.`;
       }
     } else if (kind === 't3x') {
       const t = C.top3Of(store.day(key)).find(x => x.id === a);
@@ -849,7 +927,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     } else if (kind === 'fx') reply = startFocus(+a || 25, key);
     else if (kind === 'noop') toast = '수고했어요';
     // 버튼으로 바꾼 기록은 되돌리기 목록에 없으니, 옛 기록을 엉뚱하게 되돌리지 않게 목록을 비운다
-    if (['log', 'rt', 't3s', 't3x', 'skip', 'medat', 'fx'].includes(kind)) forgetUndo();
+    if (['log', 'rt', 't3s', 't3x', 't3m', 'skip', 'medat', 'fx'].includes(kind)) forgetUndo();
     try {
       await tg.answer(q.id, toast || undefined);
     } catch {
@@ -919,7 +997,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     try {
       const masks = masksFor(yk);
       const end = C.dayStartTs(key, R()) - 1;
-      const stateText = B.buildState({ now: end, key: yk, rollover: R(), day: store.day(yk), items: items(yk), masks, steps: routineSteps(yk), routineOff: !!state.routineOff[yk] });
+      const stateText = B.buildState({ now: end, key: yk, rollover: R(), day: store.day(yk), items: items(yk), masks, steps: routineSteps(yk), routineOff: !!state.routineOff[yk], bond: bondOn() ? bondText(bondNow(yk)) : '' });
       const r = await memory.dream({
         key: yk,
         stateText,

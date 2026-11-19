@@ -92,9 +92,10 @@ const AWAIT_TEXT = {
   tomorrow: () => '내일 첫 결과물 하나와 마감',
   wake_at: () => '실제로 일어난 시각',
   wake_confirm: a => `기상을 ${fmt(a.at)}로 고칠지 (응/아니)`,
+  why: a => `핵심 ${a.id} 마감을 미루는 이유 한 줄 (받으면 미룸)`,
 };
 
-// o: { now, key, rollover, day, items, masks, steps, routineOff, awaiting, dose, focus, calendar, paused }
+// o: { now, key, rollover, day, items, masks, steps, routineOff, awaiting, dose, focus, calendar, paused, bond }
 export function buildState(o) {
   const L = [];
   const day = o.day || {};
@@ -107,6 +108,7 @@ export function buildState(o) {
   }
   const t3 = C.top3Of(day);
   L.push(`오늘 핵심 (최대 3): ${t3.length ? t3.map(t => `${t.id} "${t.text}"${t.due ? ` ${fmt(t.due)} 마감` : ' 마감 없음'}${t.done ? ` · 끝남${t.out ? ` (결과물: ${t.out})` : ''}` : ''}`).join(' / ') : '없음'}`);
+  if (o.bond) L.push(`약속: ${o.bond}`);
   const meds = (o.masks || []).map(m => {
     const it = (o.items || []).find(i => i.id === m.id);
     if (!it) return null;

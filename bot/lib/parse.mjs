@@ -189,7 +189,7 @@ export function parseMessage(text, ctx) {
     return t.at;
   };
   // 한 줄 메모·결과물·집중 메모를 기다리는 중이면 그 답이 먼저 (메모 안의 "일어났어"를 기상으로 잡지 않게)
-  const freeAns = aw && ['note', 'out', 'fnote'].includes(aw.kind);
+  const freeAns = aw && ['note', 'out', 'fnote', 'why'].includes(aw.kind);
 
   // onlyAnswers: 비서가 물어본 질문의 답만 규칙으로 받는다 (두뇌 모드에서 나머지 말은 AI가 읽는다)
   const general = !ctx.onlyAnswers;
@@ -238,6 +238,8 @@ export function parseMessage(text, ctx) {
     if (aw.kind === 'note' && aw.item) return { actions: [{ type: 'note', item: aw.item, note: raw }] };
     // "결과물 한 줄"을 물었는데 "아직 못 했어"면 끝낸 게 아니다
     if (aw.kind === 'out' && aw.id && !NOT_DONE.test(raw)) return { actions: [{ type: 'top3_done', id: aw.id, out: raw }] };
+    // 약속을 미루는 이유 한 줄: 받으면 미룬다
+    if (aw.kind === 'why' && aw.id) return { actions: [{ type: 'top3_move', id: aw.id, min: aw.min || 15, why: raw }] };
     if (aw.kind === 'fnote' && aw.ev) return { actions: [{ type: 'focus_note', ev: aw.ev, key: aw.key, note: raw }] };
     // 지난 일을 말하는 문장의 시각은 마감 답이 아니다 ("3시 10분에 이미 먹었다고")
     if (aw.kind === 'due' && aw.id && !past) {

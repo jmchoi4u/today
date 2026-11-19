@@ -38,13 +38,14 @@ export function report(s, p, seed) {
   const top = s.top3 || [];
   const fmt = s.fmt;
   const left = top.filter(t => !t.done);
-  let text, mood;
+  let text, mood, plain = false; // plain: 핵심이 없거나 진행 중이라는 보통 말 (약속 표정을 쓴다)
   if (!s.woke) {
     text = '아직 오늘을 시작하지 않으셨어요. 일어난 시각부터 알려 주세요.';
     mood = 'calm';
   } else if (!top.length) {
     text = '아직 오늘 핵심이 없어요. 끝이 보이는 일 하나만 정해 볼까요?';
     mood = 'calm';
+    plain = true;
   } else if (!left.length) {
     text = `오늘 핵심 ${top.length}개를 다 끝내셨어요. 이제 쉬어도 돼요.`;
     mood = 'cheer';
@@ -58,9 +59,17 @@ export function report(s, p, seed) {
       const k = top.length - left.length;
       text = `핵심 ${top.length}개 중 ${k}개 끝났어요. 다음은 "${cut(next.text)}"${next.due ? `, ${fmt(next.due)}까지` : ''}예요.`;
       mood = k >= 1 ? 'happy' : 'calm';
+      plain = true;
     }
   }
   if (s.focusMin > 0) text += ` 집중은 ${s.focusMin}분 했어요.`;
+  // 약속과 연속 기록 (bond.js의 bond)
+  const b = s.bond;
+  if (b) {
+    if (b.yesterday === 'missed' && !b.todayKept) text += ' 어제 약속은 미제출로 남았어요.';
+    else if (b.streak >= 1) text += ` 🔥 연속 ${b.streak}일째예요.`;
+    if (plain && b.mood === 'worry') mood = 'worry';
+  }
   if (p?.call && pick([true, false, false], `${seed}:call`)) text = `${p.call}, ${text}`;
   return { text, mood };
 }

@@ -3,6 +3,7 @@
 import * as C from '../../js/core.js';
 import * as GM from '../../js/game.js';
 import * as PK from '../../js/pk.js';
+import * as BD from '../../js/bond.js';
 
 const { MIN, HOUR } = C;
 const fmt = C.fmtTime;
@@ -81,13 +82,19 @@ export function planPings({ now, cfg, day, prevDay = null, recentDays = [], game
   }
 
   // 3) 핵심 3가지의 외부 마감: 30분 전, 마감, 1시간 지남
+  // 약속(비서 설정이 있을 때): 1시간 지나면 결과물을 받거나 미제출로 남긴다. 미제출로 남긴 일은 더 묻지 않는다
+  const bond = !!game?.secretary?.name;
   for (const t of C.top3Of(day)) {
-    if (t.done || !t.due) continue;
+    if (t.done || !t.due || t.drop) continue;
     const d = t.due;
     const to = t.to ? ` · ${t.to}에게 보고` : '';
     if (now >= d - 30 * MIN && now < d) push('due', `due30:${t.id}:${d}`, { text: `⏰ ${Math.ceil((d - now) / MIN)}분 남았어요: ${t.text} (${fmt(d)} 마감${to})`, buttons: [[btn('✅ 끝냈어요', `t3d:${t.id}`), btn('+15분', `t3s:${t.id}:15`)]] });
     if (now >= d && now < d + HOUR) push('due', `due0:${t.id}:${d}`, { text: `⏰ 마감 시간이에요: ${t.text}\n끝났으면 결과물 한 줄을 답장으로 보내 주세요.`, buttons: [[btn('✅ 끝냈어요', `t3d:${t.id}`), btn('+30분', `t3s:${t.id}:30`)]], await: { kind: 'out', id: t.id } });
-    if (now >= d + HOUR && now < d + 4 * HOUR) push('due', `due60:${t.id}:${d}`, { text: `마감이 1시간 지났어요: ${t.text}\n새 마감을 답장으로 보내 주세요 (예: 21시). 아니면 오늘은 접어요.`, buttons: [[btn('✅ 사실 끝냈어요', `t3d:${t.id}`), btn('오늘은 접기', `t3x:${t.id}`)]], await: { kind: 'due', id: t.id } });
+    if (now >= d + HOUR && now < d + 4 * HOUR) {
+      push('due', `due60:${t.id}:${d}`, bond
+        ? { text: `마감이 1시간 지났어요: ${t.text}\n끝냈으면 결과물 한 줄을 보내 주세요. 아니면 미제출로 남겨요.`, buttons: [[btn('✅ 사실 끝냈어요', `t3d:${t.id}`), btn('미제출로 남기기', `t3m:${t.id}`)]], await: { kind: 'out', id: t.id } }
+        : { text: `마감이 1시간 지났어요: ${t.text}\n새 마감을 답장으로 보내 주세요 (예: 21시). 아니면 오늘은 접어요.`, buttons: [[btn('✅ 사실 끝냈어요', `t3d:${t.id}`), btn('오늘은 접기', `t3x:${t.id}`)]], await: { kind: 'due', id: t.id } });
+    }
   }
 
   // 3-1) 캘린더 일정: 30분 전에 한 번. 밤 10시 뒤엔 내일 일정을 한 줄로
@@ -181,7 +188,9 @@ export function planPings({ now, cfg, day, prevDay = null, recentDays = [], game
   // 9) 금요일 5줄: 금요일 17시 뒤, 최근 사흘 안에 보낸 보고가 없으면 (recentDays는 최근 7일, 오래된 것부터)
   const rc = GM.reportCfg(game);
   if (game?.report && GM.reportDue(rc, { key, now, rollover: R, days: recentDays.slice(-3) }) && now < at(rc.after) + 4 * HOUR) {
-    push('report', 'report5', { text: reportDraft(game.report, recentDays, opts.appUrl), buttons: [] });
+    // 약속 줄: 비서 설정이 있을 때만. recentDays의 날마다 date가 그날 key다
+    const bondText = bond ? BD.reportLine(BD.bond(recentDays.map(d => ({ key: d.date, list: BD.promisesOf(C.top3Of(d)) })), key)) : '';
+    push('report', 'report5', { text: reportDraft(game.report, recentDays, opts.appUrl, bondText), buttons: [] });
   }
 
   return out.sort(byPri);
@@ -219,19 +228,20 @@ function stepPing(s, due, { byId, day }) {
 }
 
 // 주간 보고·리뷰 초안: 이번 주 끝낸 일과 결과물, 횟수 (기본은 금요일 5줄. report 설정으로 바뀐다)
-export function reportDraft(report, days, appUrl) {
+export function reportDraft(report, days, appUrl, bondText = '') {
   const rc = GM.reportCfg({ report });
   const link = appUrl ? `\n\n앱에서 마저 쓰고 보내기: ${appUrl}?go=report` : '';
   const head = `📮 ${rc.title}${rc.to ? ` → ${rc.to}` : ''}`;
+  const bl = bondText ? `\n${bondText}` : ''; // 약속 줄 (링크 앞)
   const numOf = x => (x.item ? `${x.label} ${GM.countIn(days, x.item)}` : `${x.label} __`);
   if (rc.custom) {
     const nums = rc.nums.map(numOf).join(' · ') || '(채우기)';
-    return `${head}\n숫자: ${nums}\n${rc.fields.map(f => `${f.label}:`).join('\n')}${rc.numsOnly ? '\n보낼 때는 숫자만 보내요.' : ''}${link}`;
+    return `${head}\n숫자: ${nums}\n${rc.fields.map(f => `${f.label}:`).join('\n')}${rc.numsOnly ? '\n보낼 때는 숫자만 보내요.' : ''}${bl}${link}`;
   }
   const done = days.flatMap(d => C.top3Of(d).filter(t => t.done).map(t => (t.out ? `${t.text} (${t.out})` : t.text)));
   const n = new Map();
   for (const x of done) n.set(x, (n.get(x) || 0) + 1);
   const did = [...n].slice(0, 5).map(([x, k]) => (k > 1 ? `${x} ×${k}` : x)).join(', ') || '(채우기)';
   const nums = rc.nums.map(numOf).join(' · ') || '(채우기)';
-  return `${head}\n1. 한 것: ${did}\n2. 숫자: ${nums}\n3. 막힌 것:\n4. 다음 주:\n5. 부탁:${link}`;
+  return `${head}\n1. 한 것: ${did}\n2. 숫자: ${nums}\n3. 막힌 것:\n4. 다음 주:\n5. 부탁:${bl}${link}`;
 }

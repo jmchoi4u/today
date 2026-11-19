@@ -1593,3 +1593,189 @@ test('봇 이름: 비서 이름으로 한 번만 바꾸고, 설정이 없으면 
   await h2.bot.tick();
   assert.equal(n, 2, '6시간 뒤엔 다시 해 본다');
 });
+
+// ---------------- 약속과 연속 기록 (비서 설정이 있을 때만) ----------------
+const SG = { ...GAME, secretary: { name: '하루', call: '선장님' } };
+const YK = '2026-11-12';
+function bondHarness(ts) {
+  const h = harness(ts);
+  h.state.owner = 7;
+  h.store.setGame(SG);
+  return h;
+}
+const t3 = (h, id = 't1', key = KEY) => C.top3Of(h.store.day(key)).find(x => x.id === id);
+const btnData = s => s.buttons.flat().map(b => b.callback_data);
+
+test('약속: 오늘 마감이 있는 핵심은 약속으로 받는다 (내일 것과 마감 없는 것은 아니다)', async () => {
+  const h = bondHarness(at(17, 0));
+  await h.msg('코테 2문제 21시');
+  assert.equal(h.last(), '🎯 "코테 2문제" 21:00 마감으로 잡았어요. 30분 전에 알려 드릴게요. 약속으로 받았어요. 미루기는 한 번만 돼요.');
+  await h.msg('내일 10시 코테');
+  assert.doesNotMatch(h.last(), /약속으로/);
+});
+
+test('약속: 처음 미룰 때는 이유를 받고 한 번 미루고, 두 번째는 버튼이든 말이든 미루지 않는다', async () => {
+  const h = bondHarness(at(20, 40));
+  h.store.setTop3(KEY, 't1', { text: '코테', due: at(21, 0) });
+  await h.tap('t3s:t1:15');
+  assert.equal(h.last(), '미루는 이유를 한 줄로 보내 주세요. 받으면 15분 미룰게요.');
+  assert.equal(t3(h).due, at(21, 0), '이유를 받기 전엔 안 미룬다');
+  assert.deepEqual([h.state.awaiting.kind, h.state.awaiting.id, h.state.awaiting.min], ['why', 't1', 15]);
+  await h.msg('저녁 먹느라 늦게 시작함');
+  assert.equal(h.last(), '⏰ "코테" 마감을 21:15로 미뤘어요. 미루기는 이걸로 끝이에요.');
+  assert.deepEqual([t3(h).due, t3(h).moved, t3(h).why], [at(21, 15), 1, '저녁 먹느라 늦게 시작함']);
+  assert.equal(h.state.awaiting, null);
+  await h.tap('t3s:t1:15');
+  assert.equal(h.last(), '이 약속은 이미 한 번 미뤘어요 ("코테"). 끝냈으면 끝냈다고, 아니면 미제출로 남겨 주세요.');
+  assert.deepEqual(btnData(h.sent.at(-1)), ['t3d:t1', 't3m:t1']);
+  assert.notEqual(h.state.awaiting?.kind, 'why');
+  h.state.awaiting = { kind: 'due', id: 't1', until: h.now() + 60 * 60000 };
+  await h.msg('22시');
+  assert.match(h.last(), /이미 한 번 미뤘어요/);
+  assert.deepEqual(btnData(h.sent.at(-1)), ['t3d:t1', 't3m:t1']);
+  assert.equal(t3(h).due, at(21, 15), '말로 바꿔도 안 미룬다');
+});
+
+test('약속: 마감이 있던 일의 마감을 말로 바꾸면 미루기 한 번, 마감이 없던 일에 정하는 건 미루기가 아니다', async () => {
+  const h = bondHarness(at(20, 0));
+  h.store.setTop3(KEY, 't2', { text: '이력서', due: at(21, 30) });
+  h.store.setTop3(KEY, 't3', { text: '메일' });
+  h.state.awaiting = { kind: 'due', id: 't2', until: h.now() + 60 * 60000 };
+  await h.msg('23시');
+  assert.equal(h.last(), '⏰ "이력서" 23:00 마감. 30분 전에 알려 드릴게요. 미루기를 한 번 썼어요.');
+  assert.deepEqual([t3(h, 't2').due, t3(h, 't2').moved], [at(23, 0), 1]);
+  h.state.awaiting = { kind: 'due', id: 't3', until: h.now() + 60 * 60000 };
+  await h.msg('22시');
+  assert.equal(h.last(), '⏰ "메일" 22:00 마감. 30분 전에 알려 드릴게요.');
+  assert.equal(t3(h, 't3').moved, undefined);
+});
+
+test('약속: 1시간 지나면 미제출 버튼, 미제출로 남기면 더 묻지 않고 상태에 ✖️로 보인다', async () => {
+  const h = bondHarness(at(22, 5));
+  h.store.setTop3(KEY, 't1', { text: '코테', due: at(21, 0) });
+  const p = plan(h.store, h.now).find(x => x.kind === 'due');
+  assert.equal(p.key, `due60:t1:${at(21, 0)}`);
+  assert.equal(p.text, '마감이 1시간 지났어요: 코테\n끝냈으면 결과물 한 줄을 보내 주세요. 아니면 미제출로 남겨요.');
+  assert.deepEqual(btnData(p), ['t3d:t1', 't3m:t1']);
+  assert.deepEqual(p.await, { kind: 'out', id: 't1' });
+  await h.tap('t3m:t1');
+  assert.equal(h.last(), '"코테" 미제출로 남겼어요. 뭐가 걸렸는지 한 줄로 알려 주면 같이 볼게요.');
+  assert.equal(t3(h).drop, at(22, 5));
+  assert.ok(!plan(h.store, h.now).some(x => x.kind === 'due'), '미제출이면 마감 알림 끝');
+  await h.msg('오늘');
+  assert.match(h.last(), /   ✖️ 코테 · 미제출\n/);
+});
+
+test('약속: 결과물 한 줄과 함께 끝내면 연속 기록을 알려 주고, 결과물이 없으면 지킨 게 아니다', async () => {
+  const h = bondHarness(at(18, 0));
+  h.store.setTop3(YK, 't1', { text: '어제 일', done: at(15, 0, 12), out: '보냄' });
+  h.store.setTop3(KEY, 't1', { text: '코테', due: at(21, 0) });
+  h.store.setTop3(KEY, 't2', { text: '이력서', due: at(22, 0) });
+  await h.tap('t3d:t1');
+  assert.doesNotMatch(h.last(), /약속을 지켰어요/, '결과물을 묻는 중엔 아직');
+  assert.match(h.last(), /결과물 한 줄 남길래요\?/);
+  await h.msg('풀이 올림');
+  assert.equal(h.last(), '✅ 끝! "코테" → 풀이 올림\n약속을 지켰어요. 🔥 연속 2일째예요.');
+  await h.tap('t3d:t2');
+  assert.doesNotMatch(h.last(), /약속을 지켰어요/);
+  await h.msg('오늘');
+  const lines = h.last().split('\n');
+  assert.equal(lines[1], '');
+  assert.equal(lines[2], '🔥 연속 2일 · 이번 주 약속 2/3 지킴');
+  assert.ok(lines.includes('   ✅ 이력서 (결과물 없음)'));
+  assert.ok(lines.includes('   ✅ 코테 → 풀이 올림'));
+  assert.match(h.last(), /🎯 핵심 ▰▰ 2\/2/, '핵심 진행은 그대로');
+  await h.msg('문서 링크');
+  assert.equal(h.last(), '✅ 끝! "이력서" → 문서 링크\n약속을 지켰어요. 🔥 연속 2일째예요.', '결과물을 나중에 보내면 그때 지킨 걸로');
+  await h.msg('끝 코테 풀이 다시 올림');
+  assert.doesNotMatch(h.last(), /약속을 지켰어요/, '이미 지킨 약속은 다시 알리지 않는다');
+});
+
+test('약속: 아침 한마디는 어제 지킴·미제출·약속 없음에 맞게, 첫마디와 한 메시지로 하루 한 번', async () => {
+  const morning = async setup => {
+    const h = bondHarness(at(7, 0));
+    setup(h);
+    await h.tap('wake');
+    return h;
+  };
+  const kept = await morning(h => {
+    h.store.setTop3('2026-11-11', 't1', { text: 'a', done: at(12, 0, 11), out: 'x' });
+    h.store.setTop3(YK, 't1', { text: 'b', done: at(12, 0, 12), out: 'y' });
+    h.state.hello = { key: KEY, text: '좋은 아침이에요' };
+  });
+  assert.equal(kept.last(), '좋은 아침이에요\n🔥 연속 2일째예요. 오늘 약속 하나만 정해 주세요.');
+  assert.equal(kept.state.hello.sent, true);
+  assert.equal(kept.state.greeted, KEY);
+  await kept.msg('일어났어');
+  assert.equal(kept.sent.filter(s => /오늘 약속 하나만/.test(s.text)).length, 1, '같은 날 두 번 보내지 않는다');
+  const missed = await morning(h => h.store.setTop3(YK, 't1', { text: 'b', due: at(21, 0, 12) }));
+  assert.equal(missed.last(), '어제 약속은 미제출로 남았어요. 뭐가 걸렸어요? 오늘은 하나만, 작게 잡아요.');
+  const none = await morning(() => {});
+  assert.equal(none.last(), '어제는 약속이 없었어요. 오늘 끝낼 한 가지와 마감을 알려 주세요.');
+  const once = await morning(h => h.store.setTop3(YK, 't1', { text: 'b', done: at(12, 0, 12), out: 'y' }));
+  assert.equal(once.last(), '어제 약속을 지키셨어요. 오늘도 하나만 정해 주세요.');
+});
+
+test('약속: AI에게 약속 줄을 보내고, 미루는 이유의 답은 두뇌 모드에서도 규칙이 받는다', async () => {
+  const h = brainHarness(at(20, 40), () => ({ actions: [], reply: '네' }));
+  h.store.setGame(SG);
+  h.store.setTop3(YK, 't1', { text: '어제 일', done: at(15, 0, 12), out: '보냄' });
+  h.store.setTop3(KEY, 't1', { text: '코테', due: at(21, 0) });
+  await h.msg('오늘 좀 피곤하네');
+  assert.match(h.prompts[0], /\n약속: 연속 1일, 어제 지킴, 이번 주 1\/2 지킴\n/);
+  await h.tap('t3s:t1:15');
+  await h.msg('회의가 길어졌어');
+  assert.equal(h.prompts.length, 1, '이유는 AI에게 묻지 않는다');
+  assert.equal(t3(h).why, '회의가 길어졌어');
+  const h2 = brainHarness(at(20, 40), () => ({ actions: [], reply: '네' }));
+  await h2.msg('오늘 좀 피곤하네');
+  assert.doesNotMatch(h2.prompts[0], /약속:/, '비서 설정이 없으면 없다');
+});
+
+test('약속: 금요일 초안에 약속 줄이 링크 앞에 붙는다', () => {
+  const now = clock(at(17, 30));
+  const store = makeStore(now);
+  store.setGame(SG);
+  store.setWake(KEY, at(7, 0));
+  store.setTop3(YK, 't1', { text: '어제 일', due: at(21, 0, 12) });
+  store.setTop3(KEY, 't1', { text: '코테 2문제', done: at(12, 0), out: '풀이 올림' });
+  const r = planPings({ now: now(), cfg: store.config(), day: store.day(KEY), recentDays: [store.day(YK), store.day(KEY)], game: store.game(), profiles: [], opts: OPTS }).find(p => p.key === 'report5');
+  assert.match(r.text, /5\. 부탁:\n약속: 이번 주 2개 중 1개 지킴 · 연속 1일\n\n앱에서 마저 쓰고 보내기/);
+  assert.equal(reportDraft({ to: '', nums: [] }, [], '', '약속: x'), '📮 금요일 5줄\n1. 한 것: (채우기)\n2. 숫자: (채우기)\n3. 막힌 것:\n4. 다음 주:\n5. 부탁:\n약속: x');
+  const custom = reportDraft({ title: '리뷰', nums: [{ id: 'a', label: 'A' }], fields: [{ id: 'f', label: '한 줄' }] }, [], 'https://x/', '약속: x');
+  assert.match(custom, /한 줄:\n약속: x\n\n앱에서/);
+});
+
+test('약속: 비서 설정이 없으면 미루기는 바로 되고, 1시간 지난 알림은 예전 그대로', async () => {
+  const h = harness(at(20, 40));
+  h.state.owner = 7;
+  h.store.setTop3(KEY, 't1', { text: '코테', due: at(21, 0) });
+  await h.tap('t3s:t1:15');
+  assert.equal(h.last(), '⏰ "코테" 마감 21:15로 미뤘어요. 이번엔 끝내요.');
+  await h.tap('t3s:t1:15');
+  assert.equal(t3(h).due, at(21, 30), '두 번째도 미뤄진다');
+  assert.equal(t3(h).moved, undefined);
+  h.now.set(at(22, 40));
+  const p = plan(h.store, h.now).find(x => x.kind === 'due');
+  assert.equal(p.text, '마감이 1시간 지났어요: 코테\n새 마감을 답장으로 보내 주세요 (예: 21시). 아니면 오늘은 접어요.');
+  assert.deepEqual(btnData(p), ['t3d:t1', 't3x:t1']);
+  assert.deepEqual(p.await, { kind: 'due', id: 't1' });
+});
+
+test('약속: 같은 일을 새 시각으로 다시 보내도 미루기 한 번으로 치고, 두 번째는 받지 않는다', async () => {
+  const h = bondHarness(at(17, 0));
+  await h.msg('코테 2문제 21시');
+  assert.equal(t3(h).due, at(21, 0));
+  await h.msg('코테 2문제 22시');
+  assert.equal(h.last(), '⏰ "코테 2문제" 22:00 마감. 30분 전에 알려 드릴게요. 미루기를 한 번 썼어요.');
+  assert.deepEqual([t3(h).due, t3(h).moved], [at(22, 0), 1]);
+  await h.msg('코테 2문제 23시');
+  assert.match(h.last(), /이미 한 번 미뤘어요/);
+  assert.deepEqual(btnData(h.sent.at(-1)), ['t3d:t1', 't3m:t1']);
+  assert.deepEqual([t3(h).due, t3(h).moved], [at(22, 0), 1], '마감도 미룬 횟수도 그대로');
+  // 같은 시각으로 다시 보내는 건 미루기가 아니다
+  const h2 = bondHarness(at(17, 0));
+  await h2.msg('이력서 21시');
+  await h2.msg('이력서 21시');
+  assert.equal(t3(h2).moved || 0, 0);
+});

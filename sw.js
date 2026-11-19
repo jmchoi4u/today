@@ -1,7 +1,7 @@
 // 오프라인에서도 열리게 앱 파일을 보관한다.
 // 앱 파일은 네트워크 우선(새 버전이 바로 반영됨), 실패하면 보관본. 글꼴은 보관본 우선. GitHub API는 건드리지 않는다.
-const CACHE = 'today-v20';
-const SHELL = ['./', 'index.html', 'guide.html', 'css/app.css', 'js/app.js', 'js/core.js', 'js/store.js', 'js/sync.js', 'js/chart.js', 'js/pk.js', 'js/game.js', 'js/weather.js', 'js/sound.js', 'js/secretary.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/sec-calm.jpg', 'icons/sec-happy.jpg', 'icons/sec-cheer.jpg', 'icons/sec-worry.jpg'];
+const CACHE = 'today-v21';
+const SHELL = ['./', 'index.html', 'guide.html', 'css/app.css', 'js/app.js', 'js/core.js', 'js/store.js', 'js/sync.js', 'js/chart.js', 'js/pk.js', 'js/game.js', 'js/weather.js', 'js/sound.js', 'js/secretary.js', 'js/bond.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/sec-calm.jpg', 'icons/sec-happy.jpg', 'icons/sec-cheer.jpg', 'icons/sec-worry.jpg'];
 const FONT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', e => {
