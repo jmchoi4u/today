@@ -144,7 +144,7 @@ p{margin:0}
 .sec-face{width:64px;height:64px;padding:0;border:2px solid var(--frame);border-radius:50%;overflow:hidden;background:var(--well);display:block;cursor:pointer;animation:bob 2.8s ease-in-out infinite}
 .sec-face:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 .sec-face:active{scale:.94}
-.sec-face img{width:150%;height:150%;max-width:none;margin:-22% 0 0 -25%;display:block} /* 작은 동그라미 안에서 얼굴이 크게 보이게 당겨 넣는다 */
+.sec-face img{width:100%;height:100%;object-fit:cover;display:block}
 .sec-name{display:inline-block;font-family:var(--font-display);font-size:12px;line-height:1.6;background:var(--tag-bg);color:var(--tag-ink);border-radius:999px;padding:0 8px;margin-bottom:2px}
 .sec-bubble{position:relative;margin-top:10px;background:var(--panel);color:var(--ink);border:2px solid var(--frame);border-radius:14px;padding:8px 12px;font-size:14px;line-height:1.5;animation:pop .35s ease-out}
 .sec-bubble::before{content:'';position:absolute;top:-8px;left:26px;width:12px;height:12px;background:var(--panel);border-left:2px solid var(--frame);border-top:2px solid var(--frame);transform:rotate(45deg)}

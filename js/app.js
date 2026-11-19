@@ -9,7 +9,7 @@ import * as WX from './weather.js';
 import { createSound, DEFAULT_VOL, clampVol } from './sound.js';
 import * as SEC from './secretary.js';
 
-const VERSION = '1.8.0';
+const VERSION = '1.8.1';
 const { MIN, HOUR } = C;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -39,8 +39,8 @@ const IC = {
   x: '<svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>',
 };
 const MOCHI = '<svg viewBox="0 0 32 32" class="mochi-face" aria-hidden="true"><circle cx="16" cy="17.5" r="12.5" class="kn-body"/><path d="M15 5.2c-1-3 1-4.6 3.3-3.9" class="kn-line"/><circle cx="12" cy="16.5" r="3.7" class="kn-gl"/><circle cx="20" cy="16.5" r="3.7" class="kn-gl"/><circle cx="12" cy="16.5" r="1.4" class="kn-eye"/><circle cx="20" cy="16.5" r="1.4" class="kn-eye"/><path d="M14.3 21.5q1.7 1.3 3.4 0" class="kn-line"/></svg>';
-// 비서 캐릭터: 비공개 설정에 이름이 있을 때만. 없으면 기존 마스코트
-const sec = () => SEC.persona(store.game());
+// 비서 캐릭터: 비공개 설정에 이름이 있을 때만. 없거나 이 기기에서 숨기면 기존 마스코트
+const sec = () => SEC.persona(store.game(), !!local().secHide);
 const secSay = () => (ui.secSay && ui.secSay.until > now() ? ui.secSay : null);
 const faceHtml = mood => {
   const p = sec();
@@ -1159,7 +1159,7 @@ function setHtml() {
     ${places.map(p => `<div class="set-row"><span>📍 ${esc(p.name)}</span><button class="btn sm danger" data-act="place-del" data-arg="${esc(p.id)}">삭제</button></div>`).join('')}
     ${l.loc ? '<div class="row-btns"><button class="btn" data-act="place-add">지금 위치를 장소로 저장</button></div>' : ''}`);
 
-  h += win('화면', 'THEME', `<div class="seg">${[['auto', '기기 설정'], ['light', '밝게'], ['dark', '어둡게']].map(([v, t]) => `<button class="${l.theme === v ? 'on' : ''}" data-act="theme" data-arg="${v}">${t}</button>`).join('')}</div>`);
+  h += win('화면', 'THEME', `<div class="seg">${[['auto', '기기 설정'], ['light', '밝게'], ['dark', '어둡게']].map(([v, t]) => `<button class="${l.theme === v ? 'on' : ''}" data-act="theme" data-arg="${v}">${t}</button>`).join('')}</div>${SEC.persona(store.game()) ? `<div class="set-row"><span>비서 캐릭터 숨기기<small>공식적인 자리에서 얼굴·이름·말풍선을 감춰요. 이 기기에만 적용돼요</small></span><button class="mini-toggle ${l.secHide ? 'on' : ''}" data-act="sec-hide" aria-pressed="${!!l.secHide}">${l.secHide ? '켜짐' : '꺼짐'}</button></div>` : ''}`);
 
   h += win('소리', 'SOUND', `<div class="set-row"><span>집중이 끝날 때 알림음<small>0으로 두면 소리 없이 진동만 해요</small></span><span><input type="range" min="0" max="100" step="5" data-change="vol" aria-label="알림음 음량" value="${vol()}" style="width:120px;accent-color:var(--accent);vertical-align:middle"> <b id="vol-val">${vol()}</b></span></div><div class="row-btns"><button class="btn" data-act="sound-test">들어보기</button></div>`);
   h += guideHtml();
@@ -1174,7 +1174,7 @@ function guideHtml() {
   const sec = (title, rows) => `<details><summary>${title}</summary><ul class="med-ul">${rows.map(r => `<li>${r}</li>`).join('')}</ul></details>`;
   return win('사용설명서', 'GUIDE', `<p class="lead">앱과 텔레그램 비서는 같은 기록을 써요. 어느 쪽에서 눌러도 돼요.</p>
     <div class="row-btns"><a class="btn pri" href="guide.html" style="text-decoration:none;text-align:center">전체 기능 설명서 열기</a></div>
-    ${sec('오늘 탭', ['타일을 한 번 누르면 기록, 체크한 타일을 누르면 시각 고치기, 타일의 ⋯은 건너뛰기와 지난 시각 기록', '아침 루틴: 일어나고 4시간 동안 보여요. 맨 위 줄이 집 밖으로 나가는 마감이에요', '핵심 3가지: 끝이 보이는 일 하나와 마감 시각. 끝내면 결과물 한 줄', '코치 카드: 지금 할 한 가지. "나중에"를 누르면 잠시 뒤 다시 물어요', '비서 얼굴을 누르면 오늘 상황을 말해 줘요 (비서 설정이 있을 때)', '집중 타이머: 25분·50분. 약 효과가 가장 높은 구간엔 코치가 50분을 권해요. 끝나면 알림음이 울려요 (음량은 설정 → 소리)'])}
+    ${sec('오늘 탭', ['타일을 한 번 누르면 기록, 체크한 타일을 누르면 시각 고치기, 타일의 ⋯은 건너뛰기와 지난 시각 기록', '아침 루틴: 일어나고 4시간 동안 보여요. 맨 위 줄이 집 밖으로 나가는 마감이에요', '핵심 3가지: 끝이 보이는 일 하나와 마감 시각. 끝내면 결과물 한 줄', '코치 카드: 지금 할 한 가지. "나중에"를 누르면 잠시 뒤 다시 물어요', '비서 얼굴을 누르면 오늘 상황을 말해 줘요 (비서 설정이 있을 때). 설정 → 화면에서 숨길 수 있어요', '집중 타이머: 25분·50분. 약 효과가 가장 높은 구간엔 코치가 50분을 권해요. 끝나면 알림음이 울려요 (음량은 설정 → 소리)'])}
     ${sec('흐름·약 탭', ['맨 위 "＋ 기록 추가": 기상·취침·집중과 모든 항목을 원하는 시각에 넣어요. 지난 날짜도 돼요', '기록 줄을 누르면 시각·내용을 고치거나 지워요', '약 창에 맞춘 하루: 지금 칸이 밝게 보여요', '약: 효과 곡선, 복용 기록, 언제 먹으면 언제까지, 내 데이터로 본 피크'])}
     ${sec('성장 탭', ['메인 퀘스트: 지금 단계의 과제를 누르면 +50 EXP. 숫자가 붙은 과제는 기록에서 자동으로 세요', '레벨과 스탯: 목표를 채우면 등급이 올라요', '주간 리뷰: 정한 요일·시각에 코치가 물어요. 한 주 기록과 지난번 숫자가 미리 채워져 있어요'])}
     ${sec('텔레그램 비서: 보내는 말', ['<b>코테 2문제 21시</b> / 21시까지 이력서 / 1시간 뒤 메일 답장 → 오늘 핵심 + 마감', '<b>내일 10시 코테</b> → 내일 핵심', '<b>끝</b> / 끝 풀이 올림 → 가장 급한 일을 끝낸 걸로 + 결과물 한 줄', '<b>걱정: …</b> → 주차장에 넣고 걱정 시간에 같이 봐요', '<b>불편: …</b> → 불편 한 줄', '<b>약 먹었어 / 일어났어 / 나왔어</b>', '<b>3시 10분에 약 먹었어 / 10시 반에 일어났어</b> → 지난 일은 그 시각으로 (이미 남긴 기록이면 시각을 고쳐요)', '<b>되돌려</b> → 방금 비서가 남긴 기록을 취소', '<b>기억해: …</b> → 오래 기억할 사실. <b>기억</b> = 목록, <b>잊어 m3</b> = 지우기 (두뇌 모드)', '<b>오늘</b> → 지금 상태'])}
@@ -2290,6 +2290,11 @@ const actions = {
       const s = sync.status();
       toast(s.state === 'ok' ? '동기화했어요' : s.msg || '동기화하지 못했어요');
     });
+  },
+  'sec-hide'() {
+    ui.secSay = null;
+    clearTimeout(secTimer);
+    store.setLocal({ secHide: !local().secHide });
   },
   'loc-toggle'() {
     if (local().loc) return store.setLocal({ loc: false });

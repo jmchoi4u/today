@@ -19,6 +19,14 @@ test('persona: 이름이 없거나 공백이면 null', () => {
   assert.equal(persona({ secretary: { name: 7 } }), null);
 });
 
+test('persona: 숨김이면 비서가 있어도 null', () => {
+  const g = { secretary: { name: '하루', call: '선장님' } };
+  assert.equal(persona(g, true), null);
+  assert.deepEqual(persona(g), { name: '하루', call: '선장님', link: '' });
+  assert.deepEqual(persona(g, false), persona(g));
+  assert.equal(persona({}, false), null);
+});
+
 test('persona: 공백을 자르고 길이를 20자로', () => {
   const p = persona({ secretary: { name: `  ${'가'.repeat(30)} `, call: ` ${'나'.repeat(25)} ` } });
   assert.equal(p.name, '가'.repeat(20));
@@ -39,9 +47,9 @@ test('persona: 텔레그램 링크는 https://t.me/만 남긴다', () => {
 });
 
 test('artSrc: 표정마다 파일, 모르는 표정은 calm', () => {
-  for (const m of MOODS) assert.equal(artSrc(m), `icons/sec-${m}.svg`);
-  assert.equal(artSrc('angry'), 'icons/sec-calm.svg');
-  assert.equal(artSrc(undefined), 'icons/sec-calm.svg');
+  for (const m of MOODS) assert.equal(artSrc(m), `icons/sec-${m}.jpg`);
+  assert.equal(artSrc('angry'), 'icons/sec-calm.jpg');
+  assert.equal(artSrc(undefined), 'icons/sec-calm.jpg');
 });
 
 test('moodOf: good이면 happy, 나머지는 calm', () => {

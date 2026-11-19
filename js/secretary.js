@@ -4,8 +4,9 @@
 export const MOODS = ['calm', 'happy', 'cheer', 'worry'];
 const LINK = /^https:\/\/t\.me\/[A-Za-z0-9_]{3,40}$/;
 
-// 비서 설정이 없거나 이름이 비면 null (기존 마스코트 그대로)
-export function persona(game) {
+// 비서 설정이 없거나 이름이 비면 null (기존 마스코트 그대로). 숨김이면 null
+export function persona(game, hidden = false) {
+  if (hidden) return null;
   const s = game?.secretary;
   const name = typeof s?.name === 'string' ? s.name.trim() : '';
   if (!name) return null;
@@ -13,7 +14,7 @@ export function persona(game) {
   return { name: name.slice(0, 20), call: String(s.call ?? '').trim().slice(0, 20), link: LINK.test(link) ? link : '' };
 }
 
-export const artSrc = mood => `icons/sec-${MOODS.includes(mood) ? mood : 'calm'}.svg`;
+export const artSrc = mood => `icons/sec-${MOODS.includes(mood) ? mood : 'calm'}.jpg`;
 export const moodOf = card => (card?.tone === 'good' ? 'happy' : 'calm');
 
 // 같은 씨앗이면 늘 같은 줄 (Math.random 안 씀)
