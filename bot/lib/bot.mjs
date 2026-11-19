@@ -482,6 +482,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     if (focusMin) out.push(`⏱️ 집중 ${C.fmtDur(focusMin)}`);
     if (state.focus) out.push(`⏱️ 지금 집중 중 · ${fmt(state.focus.start + state.focus.dur * MIN)}에 끝나요`);
     if (state.paused === key) out.push('🔕 오늘 먼저 말 걸기는 꺼져 있어요 (/resume)');
+    else if (state.rest === key) out.push('🌙 오늘은 쉬는 중이에요. 약·마감·일정 알림만 보내요 (/resume)');
     return out.join('\n');
   }
 
@@ -744,7 +745,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
       reply = `🔔 ${Q.KIND_NAME[a] || '그'} 알림을 다시 보낼게요.`;
     } else if (kind === 'one') {
       // 조용했던 뒤의 "하나만 정하기"
-      setAwait({ kind: 'top3' });
+      setAwait({ kind: 'top3', own: true }); // own: 이 답을 기다리는 동안은 답을 바라는 다른 알림을 보내지 않는다
       state.hold = now() + 10 * MIN; // 답을 기다리는 10분 동안은 밀려 있던 알림을 보내지 않는다 (그 알림이 답을 가로채지 않게)
       save();
       reply = '오늘 끝낼 것 하나만 보내 주세요. 예: 코테 1문제 21시';
@@ -860,7 +861,8 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
     // 폰 앱에서 남긴 기록도 반응으로 친다
     const dd = store.day(key);
     const act = Math.max(0, dd.wake?.m || 0, ...(dd.events || []).map(e => e.m || 0), ...(dd.top3 || []).map(x => x.m || 0), ...(dd.skips || []).map(x => x.m || 0));
-    if (act > (state.q.seen || 0) && act <= now()) Q.onSeen(state.q, now(), act);
+    // (집중 타이머가 끝나서 비서가 스스로 남긴 기록은 반응이 아니다)
+    if (act > Math.max(state.q.seen || 0, state.botAct || 0) && act <= now()) Q.onSeen(state.q, now(), act);
     // 조용한 점검: 이틀 연속 답이 없던 종류는 3일 쉬고, 24시간 조용했으면 한 번만 가볍게 묻는다
     const rv = Q.review(state.q, key, now());
     if (state.paused !== key) {
@@ -894,7 +896,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
         state: { focus: state.focus, routineOff: !!state.routineOff[key], sent: state.sent[key] || {} },
         opts,
         calendar: brief?.calendarFor(key, R()) || null,
-      }).filter(p => !state.sent[key]?.[p.key] && (state.paused !== key || p.kind === 'focus') && Q.allow(state.q, p, now()) && (Q.isExempt(p) || (state.rest !== key && !(state.hold > now()))));
+      }).filter(p => !state.sent[key]?.[p.key] && (state.paused !== key || p.kind === 'focus') && Q.allow(state.q, p, now()) && (Q.isExempt(p) || (state.rest !== key && !(state.hold > now()) && !(p.await && awaiting()?.own))));
     };
     let pings = build();
     if (!pings.length) return;
@@ -916,6 +918,7 @@ export function createBot({ store, sync, tg, llm = null, brief = null, memory = 
       if (p.effect?.type === 'focus_end') {
         forgetUndo();
         const r = endFocus();
+        state.botAct = now();
         if (r) setAwait({ kind: 'fnote', ev: r.ev.id, key: r.key });
       } else if (p.await?.kind === 'dose') {
         // 약 알림의 답은 따로 기다린다 (기상 시각·집중 메모·결과물 질문을 덮어쓰지 않게)

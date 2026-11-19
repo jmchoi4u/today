@@ -1076,8 +1076,9 @@ test('조용한 점검: 사흘 연속 반응이 없던 종류만 3일 쉬고, �
   assert.deepEqual(Q.review(q, d(15), at(10, 0, 15)).notice, [], '이틀로는 쉬지 않는다');
   Q.onSent(q, ping('routine'), d(15), at(10, 20, 15));
   assert.deepEqual(Q.review(q, d(16), at(4, 1, 16)).notice, [], '쉰다는 알림은 밤에 보내지 않는다');
-  assert.equal(Q.allow(q, ping('routine', { key: 'rt:shower' }), at(8, 0, 16)), false);
+  assert.equal(Q.allow(q, ping('routine', { key: 'rt:shower' }), at(8, 0, 16)), true, '알리기 전에는 말없이 빼지 않는다');
   assert.deepEqual(Q.review(q, d(16), at(9, 30, 16)).notice, ['routine'], '낮에 한 번');
+  assert.equal(Q.allow(q, ping('routine', { key: 'rt:shower' }), at(9, 31, 16)), false, '알린 때부터 쉰다');
   Q.noticeSent(q);
   assert.deepEqual(Q.review(q, d(16), at(9, 31, 16)).notice, []);
   assert.equal(Q.allow(q, { kind: 'routine', key: 'rt:med', await: { kind: 'dose', item: 'med_am' } }, at(8, 0, 16)), true, '루틴의 약 단계는 줄이지 않는다');
@@ -1085,9 +1086,15 @@ test('조용한 점검: 사흘 연속 반응이 없던 종류만 3일 쉬고, �
   assert.equal(Q.allow(q, ping('due'), at(14, 0, 16)), true);
   assert.equal(q.quiet, true, '사흘 내내 반응이 없었으니 조용한 모드도 켜진다');
   q.quiet = false; // 아래는 종류별 쉬기만 본다
-  assert.equal(Q.allow(q, ping('routine'), at(4, 2, 19)), true, '3일 뒤 돌아온다');
+  assert.equal(Q.allow(q, ping('routine'), at(9, 31, 19)), true, '3일 뒤 돌아온다');
   Q.unmute(q, 'routine');
-  assert.equal(Q.allow(q, ping('routine'), at(8, 0, 16)), true);
+  assert.equal(Q.allow(q, ping('routine'), at(10, 0, 16)), true);
+  // 알림이 오고 2시간이 지난 뒤의 반응은 그 알림에 대한 답이 아니다
+  const q4 = {};
+  Q.review(q4, d(13), at(7, 0));
+  Q.onSent(q4, ping('daily'), d(13), at(18, 30));
+  Q.onSeen(q4, at(23, 0), at(23, 0));
+  assert.equal(q4.stat.daily.hit, false);
   // 늦게 답해도, 폰 앱에서 기록해도 반응으로 친다 (그날 그 알림이 온 뒤면)
   const q2 = {};
   Q.review(q2, d(13), at(7, 0));
@@ -1304,4 +1311,23 @@ test('비서 성격: 이름·호칭·말투는 비공개 설정에서 오고, �
   await h.msg('오늘 좀 지친다');
   assert.deepEqual(seen, { name: '하루', call: '선장님' });
   assert.ok(h.last().length > 200 && h.last().length <= 500, '답은 500자까지');
+});
+
+test('조용한 점검 다듬기: "오늘" 상태에 쉬는 중이 보이고, 타이머가 끝나서 비서가 남긴 기록은 반응으로 치지 않는다', async () => {
+  const h = harness(at(10, 0));
+  h.state.owner = 7;
+  await h.tap('rest');
+  await h.msg('오늘');
+  assert.match(h.last(), /오늘은 쉬는 중이에요/);
+  await h.msg('/resume');
+  await h.msg('오늘');
+  assert.doesNotMatch(h.last(), /쉬는 중/);
+  // 집중 타이머 끝: 비서가 기록을 남겨도 "내가 반응했다"로 세지 않는다
+  await h.msg('/focus 25');
+  const seen = h.state.q.seen;
+  h.now.set(at(10, 26));
+  await h.bot.tick();
+  h.now.set(at(10, 27));
+  await h.bot.tick();
+  assert.equal(h.state.q.seen, seen, '타이머 끝 기록으로 반응 시각이 바뀌지 않는다');
 });

@@ -12,6 +12,7 @@ export const IGNORE_DAYS = 3;
 export const MUTE_MS = 72 * HOUR;
 export const SILENCE_MS = 36 * HOUR;
 export const SILENCE_PINGS = 3;
+export const HIT_MS = 2 * HOUR; // 그 종류의 마지막 알림 뒤 이 안에 반응해야 그 알림에 답한 걸로 친다 (답을 기다리는 시간과 같다)
 export const KIND_NAME = { routine: '아침 루틴', go: '출발 마감', peak: '약 효과 구간', daily: '매일 한 줄', hint: '시간대 규칙', plan: '예정 습관' };
 
 // 약을 묻는 알림은 종류가 routine이어도 줄이지 않는다
@@ -32,6 +33,7 @@ function roll(st, key) {
   if (st.day && st.first) st.streak = st.hit ? 0 : (st.streak || 0) + 1;
   st.day = key;
   st.first = 0;
+  st.last = 0;
   st.hit = false;
 }
 
@@ -42,7 +44,7 @@ export function onSeen(q, now, at = now) {
   q.quiet = false;
   q.unanswered = 0;
   for (const st of Object.values(q.stat)) {
-    if (st.first && at >= st.first) {
+    if (st.first && at >= st.first && at - (st.last || st.first) <= HIT_MS) {
       st.hit = true;
       st.streak = 0;
     }
@@ -57,6 +59,7 @@ export function onSent(q, ping, key, now) {
   const st = (q.stat[ping.kind] ||= { streak: 0 });
   roll(st, key);
   if (!st.first) st.first = now;
+  st.last = now;
   q.unanswered = (q.unanswered || 0) + 1;
 }
 
@@ -64,9 +67,11 @@ export function onSent(q, ping, key, now) {
 export function review(q, key, now) {
   init(q);
   if (!q.seen) q.seen = now; // 처음 켠 때부터 센다
+  const day = daytime(now);
   for (const [kind, st] of Object.entries(q.stat)) {
     roll(st, key);
-    if ((st.streak || 0) >= IGNORE_DAYS && !(q.mute[kind] > now)) {
+    // 쉬기는 낮에 정한다: 쉰다고 알리는 그때부터 쉬게 (새벽에 정해 두고 아침 알림을 말없이 빼지 않는다)
+    if (day && (st.streak || 0) >= IGNORE_DAYS && !(q.mute[kind] > now)) {
       q.mute[kind] = now + MUTE_MS;
       st.streak = 0;
       if (!q.notice.includes(kind)) q.notice.push(kind);
@@ -74,7 +79,6 @@ export function review(q, key, now) {
   }
   for (const [kind, until] of Object.entries(q.mute)) if (until <= now) delete q.mute[kind];
   q.notice = q.notice.filter(k => q.mute[k] > now);
-  const day = daytime(now);
   let reentry = false;
   // 다시 말 거는 한마디와 쉰다는 알림은 낮에만 (자는 시간에 보내지 않는다)
   if (day && !q.quiet && now - q.seen >= SILENCE_MS && (q.unanswered || 0) >= SILENCE_PINGS) {
